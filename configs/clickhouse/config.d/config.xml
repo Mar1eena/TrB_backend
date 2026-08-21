@@ -1,4 +1,7 @@
 <clickhouse>
+    <!-- Keep protobuf schemas off /var/lib/clickhouse: the image entrypoint
+         chown's that tree, and a :ro bind-mount there aborts clickhouse-server. -->
+    <format_schema_path>/etc/clickhouse-server/format_schemas/</format_schema_path>
     <storage_configuration>
         <disks>
             <backups>

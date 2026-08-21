@@ -209,7 +209,7 @@ services:
       - hyperdx_data:/data/db                # MongoDB HyperDX: дашборды, alerts, saved searches
       - ./volumes/clickhouse/log:/var/log
       - ./configs/clickhouse/config.d/config.xml:/etc/clickhouse-server/config.d/config.xml:ro
-      - ./configs/clickhouse/format_schemas:/var/lib/clickhouse/format_schemas/:ro
+      - ./configs/clickhouse/format_schemas:/etc/clickhouse-server/format_schemas
       # HyperDX proxy: не смешивать Authorization + X-ClickHouse-* (см. hyperdx#962)
       - ./configs/clickhouse/hyperdx/clickhouseProxy.js:/app/packages/api/build/routers/api/clickhouseProxy.js:ro
       # HyperDX MCP / API v2: в Local App Mode нет Personal API Access Key (hyperdx#1222)
@@ -231,8 +231,9 @@ services:
           "http://127.0.0.1:8123/ping",
         ]
       interval: 10s
-      # timeout: 5s
-      retries: 5
+      timeout: 5s
+      retries: 12
+      start_period: 90s
     deploy:
       resources:
         limits:
