@@ -10,16 +10,10 @@ cmd_data = ./internal/services/api/data/cmd/main.go
 cmd_test = ./internal/services/test/cmd/main.go
 TRB_PROTO_REF ?= main
 
-.PHONY: build up upd down envoy nats clickhouse historicCandle historicCandleScheduler data test services gene invest
-
-build:
-	docker-compose --project-name=${name} build
+.PHONY: build up upd down envoy nats clickhouse historicCandle historicCandleScheduler data test services gene invest ver
 
 up:
 	docker-compose --project-name=${name} up -d
-
-upd:
-	docker-compose --project-name=${name} up --build -d
 
 down:
 	docker-compose --project-name=${name} down
@@ -51,8 +45,14 @@ data:
 test:
 	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_test} -t test:latest
 
-# Последовательная сборка всех Go-сервисов
-services: historicCandle historicCandleScheduler invest data test clickhouse nats envoy
+ver:
+	go get github.com/Mar1eena/trb_proto@latest
+	go mod tidy
+
+# Сначала обновляет trb_proto, затем собирает все сервисы
+build: gene ver historicCandle historicCandleScheduler invest data test clickhouse nats envoy
+
+make upd: build up
 
 gene:
 	protoc -I./configs/clickhouse/format_schemas \
