@@ -1,0 +1,67 @@
+#CLICKER HOUSE
+CLICKHOUSE_URL="localhost:9000"
+CLICKHOUSE_URL_DOCKER="clickhouse-db:9000"
+CLICKHOUSE_PORT="9000"
+CLICKHOUSE_GRPC_PORT = "9100"
+CLICKHOUSE_DATABASE="TrB"
+CLICKHOUSE_USERNAME="default"
+CLICKHOUSE_PASSWORD="default"
+
+#CLICKSTACK / HyperDX
+# Пайплайн: stdout → Vector → OTLP :4318 → collector → default.otel_* → HyperDX :8080
+# UI: http://localhost:8080 (без регистрации — configs/clickhouse/hyperdx/entry.sh)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_SERVICE_NAME=trb
+# В noauth-режиме authorization не нужен. Для auth-образа:
+# OTEL_EXPORTER_OTLP_HEADERS=authorization=<api-key>
+# CLICKSTACK_INGESTION_KEY=<api-key>
+
+# POSTGRES
+POSTGRES_PASSWORD=1234
+POSTGRES_USER=postgres
+POSTGRES_DB=trb
+POSTGRES_DATA_PATH=./volumes/postgres
+POSTGRES_URL=localhost:5432
+POSTGRES_URL_DOCKER=postgres:5432
+
+# WEB UI
+WEB_UI_API_PORT=3003
+# PORT=9091
+
+# kafka
+KAFKA_BROKERS_ADDRESS_ADDRESS=kafka:29092
+ZOOKEEPER_CLIENT_PORT=2181
+
+#REDIS
+REDIS_PASSWORD=1234
+REDIS_USER=marleena
+REDIS_USER_PASSWORD=1234
+
+# all service
+PORT=9091
+
+# NATS
+NATS_URL_DOCKER = nats://nats-server:4222
+NATS_URL = nats://localhost:4222
+
+PROMETHEUS_STORAGE=./storage/prometheus
+PROMETHEUS_DOCKER_TAG=latest
+GRAFANA_DOCKER_TAG=latest
+
+#Tinkoff invest
+INVEST_TOKEN = "t.uOs1iLFZ6QsD8YjAJAomOqi5sKWGtWmADnMwn-cNYBFSPj9w4_q0G2uNPBp6wFWXgu-V_XABvk41xiLkdAHjZA"
+INVEST_ENDPOINT = "sandbox-invest-public-api.tinkoff.ru:443"
+INVEST_ACCOUNT_ID = ""
+INVEST_APP_NAME = ""
+
+# gRPC между сервисами (test → invest/data)
+INVEST_API_URL=localhost:9091
+INVEST_API_URL_DOCKER=invest:9091
+DATA_API_URL=localhost:9091
+DATA_API_URL_DOCKER=data:9091
+
+#Historic candle service
+INTERVAL_UPDATE_HC = 30 # интервал обновления свечей в секундах
+
+

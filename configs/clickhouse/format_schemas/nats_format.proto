@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package nats;
+
+option go_package = "./;nats";
+
+import "google/protobuf/timestamp.proto";
+
+message IndicatorTask {
+    string uid = 1;
+    int32 interval = 2;
+    int64 time = 3;     // DateTime64 передается как Int64 (Unix Timestamp)
+    double open = 4;         // Decimal64(9) → int64 (масштабированный)
+    double high = 5;         // Decimal64(9) → int64 (масштабированный)
+    double low = 6;          // Decimal64(9) → int64 (масштабированный)
+    double close = 7;        // Decimal64(9) → int64 (масштабированный)
+    int64 volume = 8;       // Int64
+    int64 volume_buy = 9;   // Int64
+    int64 volume_sell = 10; // Int64
+    int32 candle_source = 11;
+    bool is_complete = 12;
+}
+
+// HistoricCandleLoadTask — задание на догрузку исторических свечей.
+// Один NATS-subject = один инструмент: TrB.HistoricCandle.Task.{uid}.{interval}.
+// В uid достаточно одного значения (первое); интервал дублирует токен subject.
+message HistoricCandleLoadTask {
+    repeated string uid = 1;
+    int32 interval = 2; // значение pb.CandleInterval; 0 = 1 минута
+}
+
+message Trade {
+    string uid = 1; //UID инструмента.
+    google.protobuf.Timestamp time = 25; //Время сделки в часовом поясе UTC по времени биржи.
+    string figi = 3; //FIGI-идентификатор инструмента.
+    int32 direction = 4; //Направление сделки.
+    double price = 5; //Цена за 1 инструмент. Чтобы получить стоимость лота, нужно умножить на лотность инструмента. [Подробнее про перевод цен в валюту](./faq_marketdata/#_15).
+    int64 quantity = 6; //Количество лотов.
+    int32 trade_source = 7; //Тип источника сделки.
+    string ticker = 8; //Тикер инструмента.
+    string class_code = 9; //Класс-код (секция торгов).
+}
+
+// UsersMethod — метод Tinkoff UsersService (только чтение).
+enum UsersMethod {
+    USERS_METHOD_UNSPECIFIED = 0;
+    GET_ACCOUNTS = 1;
+    GET_MARGIN_ATTRIBUTES = 2;
+    GET_USER_TARIFF = 3;
+    GET_INFO = 4;
+    GET_BANK_ACCOUNTS = 5;
+    GET_ACCOUNT_VALUES = 6;
+}
+
+enum UsersStatusKind {
+    USERS_STATUS_UNSPECIFIED = 0;
+    ACCEPTED = 1; // задание принято в работу
+    DONE = 2;     // задание выполнено
+    READY = 3;    // данные опубликованы и готовы к чтению
+    FAILED = 4;   // ошибка выполнения
+}
+
+// UsersTask — запрос данных UsersService.
+// Subject: TrB.Users.Task.{method}, например TrB.Users.Task.GetAccounts.
+// method в subject — источник истины; поле method в теле — запасной вариант.
+// task_id задаёт инициатор (чтобы слушать Status.{task_id}.*); если пусто — воркер сгенерирует UUID.
+message UsersTask {
+    string task_id = 1;
+    UsersMethod method = 2;
+    int32 account_status = 3;     // GetAccounts: pb.AccountStatus; 0 = ACCOUNT_STATUS_ALL
+    string account_id = 4;        // GetMarginAttributes; пусто = INVEST_ACCOUNT_ID
+    repeated string accounts = 5; // GetAccountValues
+    repeated int32 values = 6;    // GetAccountValues: pb.AccountValue
+}
+
+// UsersStatus — push-уведомление о стадии задания (Core NATS, без JetStream).
+// Subject: TrB.Users.Status.{task_id}.{accepted|ready|done|failed}
+// Слушатель должен подписаться до публикации задания, иначе уведомление пропадёт.
+message UsersStatus {
+    string task_id = 1;
+    UsersMethod method = 2;
+    UsersStatusKind kind = 3;
+    string error = 4;
+}
+
+// UsersData — ответ Tinkoff. payload — protobuf соответствующего *Response из invest-go.
+// Subject: TrB.Users.Data.{method}.{task_id}
+message UsersData {
+    string task_id = 1;
+    UsersMethod method = 2;
+    bytes payload = 3;
+}

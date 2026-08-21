@@ -1,0 +1,23 @@
+{
+    "sqltools.connections": [
+        {
+            "server": "http://localhost",
+            "port": 8123,
+            "database": "TrB",
+            "useJWT": false,
+            "requestTimeout": 30000,
+            "enableTls": false,
+            "previewLimit": 50,
+            "password": "default",
+            "username": "default",
+            "driver": "ClickHouse",
+            "name": "TrB",
+            "group": "TrB"
+        }
+        
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "go.toolsEnvVars": {
+        "GOTOOLCHAIN": "local"
+    }
+}

@@ -1,0 +1,188 @@
+# Docker logs → OTLP → ClickStack collector (:4318) → default.otel_* → HyperDX
+#
+# Path matches:
+#   Go-сервис (stdout) → OTLP :4317/:4318 → ClickStack collector → otel_* → HyperDX
+#
+# Docs: https://vector.dev/docs/reference/configuration/sinks/opentelemetry/
+
+data_dir: /var/lib/vector
+
+api:
+  enabled: true
+  address: 0.0.0.0:8686
+
+sources:
+  docker_logs:
+    type: docker_logs
+    include_labels:
+      - "com.docker.compose.project=trb"
+
+transforms:
+  drop_self:
+    type: filter
+    inputs: [docker_logs]
+    condition: |
+      !(string!(.label."com.docker.compose.service") == "vector")
+
+  to_otlp:
+    type: remap
+    inputs: [drop_self]
+    source: |
+      raw_msg = string(.message) ?? ""
+      service = string(.label."com.docker.compose.service") ?? string(.container_name) ?? "unknown"
+      container = string(.container_name) ?? ""
+      image = string(.image) ?? ""
+      stream = string(.stream) ?? "stdout"
+      container_id = string(.container_id) ?? ""
+
+      severity_text = "INFO"
+      severity_number = 9
+      body = raw_msg
+      log_attrs = [
+        {"key": "log.iostream", "value": {"stringValue": stream}},
+        {"key": "com.docker.compose.service", "value": {"stringValue": service}}
+      ]
+
+      if is_json(raw_msg) {
+        j = parse_json!(raw_msg)
+        # zlog used t/l/m/e; current zlog uses time/level/message/error
+        level = downcase(string(j.level) ?? string(j.severity) ?? string(j.l) ?? "info")
+        body = string(j.message) ?? string(j.msg) ?? string(j.m) ?? raw_msg
+        err = string(j.error) ?? string(j.e) ?? ""
+        if err != "" {
+          log_attrs = push(log_attrs, {"key": "error", "value": {"stringValue": err}})
+        }
+        if is_object(j) {
+          reserved = ["level", "severity", "l", "message", "msg", "m", "error", "e", "err", "t", "time", "timestamp"]
+          extra = 0
+          for_each(object!(j)) -> |k, v| {
+            if extra < 40 && !includes(reserved, k) {
+              val = if is_string(v) {
+                v
+              } else if is_integer(v) || is_float(v) || is_boolean(v) {
+                to_string!(v)
+              } else {
+                encode_json(v)
+              }
+              if val != "" {
+                log_attrs = push(log_attrs, {"key": k, "value": {"stringValue": val}})
+                extra = extra + 1
+              }
+            }
+          }
+        }
+        if level == "trace" {
+          severity_text = "TRACE"
+          severity_number = 1
+        } else if level == "debug" {
+          severity_text = "DEBUG"
+          severity_number = 5
+        } else if level == "info" {
+          severity_text = "INFO"
+          severity_number = 9
+        } else if level == "warn" || level == "warning" {
+          severity_text = "WARN"
+          severity_number = 13
+        } else if level == "error" || level == "err" {
+          severity_text = "ERROR"
+          severity_number = 17
+        } else if level == "fatal" || level == "panic" {
+          severity_text = "FATAL"
+          severity_number = 21
+        }
+      } else if match(raw_msg, r'\[FTL\]') {
+        severity_text = "FATAL"
+        severity_number = 21
+      } else if match(raw_msg, r'\[ERR\]') {
+        severity_text = "ERROR"
+        severity_number = 17
+      } else if match(raw_msg, r'\[WRN\]') {
+        severity_text = "WARN"
+        severity_number = 13
+      } else if match(raw_msg, r'\[INF\]') {
+        severity_text = "INFO"
+        severity_number = 9
+      } else if match(raw_msg, r'\[DBG\]') {
+        severity_text = "DEBUG"
+        severity_number = 5
+      } else if match(raw_msg, r'\[TRC\]') {
+        # nats-server TRACE payloads often contain JSON "error" — that is not an error log
+        severity_text = "TRACE"
+        severity_number = 1
+      } else if match(raw_msg, r'(?i)\blevel=(fatal|panic)\b') {
+        severity_text = "FATAL"
+        severity_number = 21
+      } else if match(raw_msg, r'(?i)\blevel=(error|err)\b') {
+        severity_text = "ERROR"
+        severity_number = 17
+      } else if match(raw_msg, r'(?i)\blevel=(warn|warning)\b') {
+        severity_text = "WARN"
+        severity_number = 13
+      } else if match(raw_msg, r'(?i)\blevel=info\b') {
+        severity_text = "INFO"
+        severity_number = 9
+      } else if match(raw_msg, r'(?i)\blevel=debug\b') {
+        severity_text = "DEBUG"
+        severity_number = 5
+      } else if match(raw_msg, r'(?i)\blevel=trace\b') {
+        severity_text = "TRACE"
+        severity_number = 1
+      } else if match(raw_msg, r'(?i)\b(fatal|panic)\b') {
+        severity_text = "FATAL"
+        severity_number = 21
+      } else if match(raw_msg, r'(?i)\b(error|err)\b') {
+        severity_text = "ERROR"
+        severity_number = 17
+      } else if match(raw_msg, r'(?i)\b(warn|warning)\b') {
+        severity_text = "WARN"
+        severity_number = 13
+      } else if match(raw_msg, r'(?i)\bdebug\b') {
+        severity_text = "DEBUG"
+        severity_number = 5
+      } else if match(raw_msg, r'(?i)\btrace\b') {
+        severity_text = "TRACE"
+        severity_number = 1
+      }
+
+      ts_ns = to_unix_timestamp!(.timestamp, unit: "nanoseconds")
+
+      . = {
+        "resourceLogs": [{
+          "resource": {
+            "attributes": [
+              {"key": "service.name", "value": {"stringValue": service}},
+              {"key": "container.name", "value": {"stringValue": container}},
+              {"key": "container.id", "value": {"stringValue": container_id}},
+              {"key": "container.image.name", "value": {"stringValue": image}},
+              {"key": "deployment.environment", "value": {"stringValue": "docker"}}
+            ]
+          },
+          "scopeLogs": [{
+            "scope": {
+              "name": "vector.docker_logs",
+              "version": "1.0.0"
+            },
+            "logRecords": [{
+              "timeUnixNano": ts_ns,
+              "severityNumber": severity_number,
+              "severityText": severity_text,
+              "body": {"stringValue": body},
+              "attributes": log_attrs
+            }]
+          }]
+        }]
+      }
+
+sinks:
+  clickstack_otlp:
+    type: opentelemetry
+    inputs: [to_otlp]
+    protocol:
+      type: http
+      uri: http://clickhouse-db:4318/v1/logs
+      method: post
+      encoding:
+        codec: otlp
+      batch:
+        max_events: 100
+        timeout_secs: 5

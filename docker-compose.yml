@@ -1,0 +1,369 @@
+name: trb
+version: "3.8"
+
+##################### CONFIG ############################
+x-services-config: &services-config
+  restart: unless-stopped
+  environment:
+    - APP_RUNTIME=docker
+    - PORT
+    - NATS_URL
+    - NATS_URL_DOCKER
+    - CLICKHOUSE_URL
+    - CLICKHOUSE_URL_DOCKER
+    - CLICKHOUSE_DATABASE
+    - CLICKHOUSE_USER
+    - CLICKHOUSE_USERNAME
+    - CLICKHOUSE_PASSWORD
+    - CLICKHOUSE_DEBUG
+    - REDIS_URL
+    - REDIS_URL_DOCKER
+    - REDIS_USER
+    - REDIS_PASSWORD
+    - KAFKA_BROKERS_ADDRESS
+    - INVEST_TOKEN
+    - INVEST_ENDPOINT
+    - INVEST_ACCOUNT_ID
+    - INVEST_APP_NAME
+    - INVEST_API_URL
+    - INVEST_API_URL_DOCKER
+    - DATA_API_URL
+    - DATA_API_URL_DOCKER
+    - INTERVAL_UPDATE_HC
+    - HCT_NATS_STREAM
+    - HCT_NATS_SUBJECT
+    - HCT_NATS_CONSUMER
+    - HCT_ORCH_SUBJECT_PREFIX
+    - HCT_ORCH_TICK_SEC
+    - HCT_ORCH_MIN_LAG_SEC
+    - HCT_ORCH_MAX_PER_TICK
+    - HCT_ORCH_INTERVAL
+    - HCT_ORCH_UIDS
+    - POSTGRES_URL
+    - POSTGRES_URL_DOCKER
+    - POSTGRES_USER
+    - POSTGRES_PASSWORD
+    - POSTGRES_DB
+  deploy:
+    resources:
+      limits:
+        cpus: '1'
+        memory: 256M
+  command: ["/app/service"]
+  volumes:
+    - ./.env:/app/.env
+  networks:
+    - TrB_Network
+  logging:
+    # json-file → Vector → OTLP :4318 → ClickStack collector → otel_* → HyperDX
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-go-build: &go-build
+  context: .
+  dockerfile: ./build/docker/services/go/Dockerfile
+
+##################### CONFIG ############################
+
+services:
+  ############################# SERVICES #############################
+  historiccandle:
+    <<: [*services-config]
+    container_name: trb-historiccandle
+    image: historiccandle:latest
+    depends_on:
+      - nats-server
+
+  historiccandle_scheduler:
+    <<: [*services-config]
+    container_name: trb-historiccandle_scheduler
+    image: historiccandle-scheduler:latest
+    depends_on:
+      - nats-server
+      - clickhouse-db
+      - postgres
+
+  invest:
+    <<: [*services-config]
+    container_name: trb-invest
+    image: invest:latest
+    build:
+      <<: *go-build
+      args:
+        CMD_PATH: ./internal/services/api/invest/cmd/main.go
+
+  nats:
+    <<: [*services-config]
+    container_name: trb-nats
+    image: nats-api:latest
+    build:
+      <<: *go-build
+      args:
+        CMD_PATH: ./internal/services/api/nats/cmd/main.go
+    depends_on:
+      - nats-server
+
+  data:
+    <<: [*services-config]
+    container_name: trb-data
+    image: data:latest
+    build:
+      <<: *go-build
+      args:
+        CMD_PATH: ./internal/services/api/data/cmd/main.go
+    depends_on:
+      clickhouse-db:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  test:
+    <<: [*services-config]
+    container_name: trb-test
+    image: test:latest
+    build:
+      <<: *go-build
+      args:
+        CMD_PATH: ./internal/services/test/cmd/main.go
+    depends_on:
+      - invest
+      - data
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  clickhouse:
+    <<: [*services-config]
+    container_name: trb-clickhouse
+    image: clickhouse-api:latest
+    build:
+      <<: *go-build
+      args:
+        CMD_PATH: ./internal/services/api/clickhouse/cmd/main.go
+    depends_on:
+      clickhouse-db:
+        condition: service_healthy
+
+  #################################################################
+
+  ############################# ENVOY #############################
+  envoy:
+    image: envoy:latest
+    container_name: trb-envoy
+    build:
+      context: .
+      dockerfile: ./build/docker/envoy/Dockerfile
+      args:
+        ENVOY_IMAGE: ${ENVOY_IMAGE:-envoyproxy/envoy}
+        ENVOY_VARIANT: ${ENVOY_VARIANT:-v1.36.4}
+        ENVOY_CONFIG: ./configs/envoy/envoy.yaml
+        TRB_PROTO_REF: ${TRB_PROTO_REF:-main}
+    restart: unless-stopped
+    environment:
+      - KAFKA_BROKERS_ADDRESS
+      - NATS_URL_DOCKER
+    ports:
+      - '8081:8081'
+      - '9901:9901'
+    depends_on:
+      - nats
+      - data
+      - clickhouse
+      - invest
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+    networks:
+      - TrB_Network
+  #################################################################
+
+  ############################## DB  ##########################################
+  clickhouse-db:
+    image: clickhouse/clickstack-all-in-one:latest
+    container_name: trb-clickhouse-db
+    ports:
+      - 4317:4317
+      - 4318:4318
+      - 8080:8080
+      - 8123:8123
+      - 9000:9000
+      - 9009:9009
+      - 9100:9100
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-TrB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USERNAME:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-default}
+      IS_OSS: "true"
+      # HyperDX → ClickHouse: пароль обязателен (в образе default/default, не пустой)
+      DEFAULT_CONNECTIONS: '[{"name":"Local ClickHouse","host":"http://127.0.0.1:8123","username":"${CLICKHOUSE_USERNAME:-default}","password":"${CLICKHOUSE_PASSWORD:-default}"}]'
+      DEFAULT_SOURCES: '[{"from":{"databaseName":"default","tableName":"otel_logs"},"kind":"log","timestampValueExpression":"Timestamp","name":"Logs","displayedTimestampValueExpression":"Timestamp","implicitColumnExpression":"Body","serviceNameExpression":"ServiceName","bodyExpression":"Body","eventAttributesExpression":"LogAttributes","resourceAttributesExpression":"ResourceAttributes","defaultTableSelectExpression":"Timestamp,ServiceName,SeverityText,Body","severityTextExpression":"SeverityText","traceIdExpression":"TraceId","spanIdExpression":"SpanId","connection":"Local ClickHouse"}]'
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse  # таблицы ClickHouse
+      - hyperdx_data:/data/db                # MongoDB HyperDX: дашборды, alerts, saved searches
+      - ./volumes/clickhouse/log:/var/log
+      - ./configs/clickhouse/config.d/config.xml:/etc/clickhouse-server/config.d/config.xml:ro
+      - ./configs/clickhouse/format_schemas:/var/lib/clickhouse/format_schemas/:ro
+      # HyperDX proxy: не смешивать Authorization + X-ClickHouse-* (см. hyperdx#962)
+      - ./configs/clickhouse/hyperdx/clickhouseProxy.js:/app/packages/api/build/routers/api/clickhouseProxy.js:ro
+      # HyperDX MCP / API v2: в Local App Mode нет Personal API Access Key (hyperdx#1222)
+      - ./configs/clickhouse/hyperdx/auth.js:/app/packages/api/build/middleware/auth.js:ro
+      # HyperDX без регистрации: stock entry.sh форсирует REQUIRED_AUTH
+      - ./configs/clickhouse/hyperdx/entry.sh:/etc/local/entry.sh:ro
+      - ./backups/clickhouse:/backups
+    # user: "101:101"
+    networks:
+      TrB_Network:
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:8123/ping",
+        ]
+      interval: 10s
+      # timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: '8G'
+
+  # https://github.com/ClickHouse/mcp-clickhouse
+  # HTTP MCP: http://127.0.0.1:8000/mcp  health: http://127.0.0.1:8000/health
+  mcp-clickhouse:
+    image: ghcr.io/clickhouse/mcp-clickhouse:latest
+    container_name: trb-mcp-clickhouse
+    restart: unless-stopped
+    depends_on:
+      clickhouse-db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      CLICKHOUSE_HOST: clickhouse-db
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USERNAME:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-default}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-TrB}
+      CLICKHOUSE_SECURE: "false"
+      CLICKHOUSE_VERIFY: "false"
+      CLICKHOUSE_CONNECT_TIMEOUT: 30
+      CLICKHOUSE_SEND_RECEIVE_TIMEOUT: 300
+      CLICKHOUSE_ALLOW_WRITE_ACCESS: ${CLICKHOUSE_ALLOW_WRITE_ACCESS:-true}
+      CLICKHOUSE_ALLOW_DROP: ${CLICKHOUSE_ALLOW_DROP:-false}
+      CLICKHOUSE_MCP_SERVER_TRANSPORT: http
+      CLICKHOUSE_MCP_BIND_HOST: "0.0.0.0"
+      CLICKHOUSE_MCP_BIND_PORT: "8000"
+      CLICKHOUSE_MCP_AUTH_DISABLED: ${CLICKHOUSE_MCP_AUTH_DISABLED:-true}
+    networks:
+      TrB_Network:
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: trb-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-trb}
+    volumes:
+      - ${POSTGRES_DATA_PATH:-./volumes/postgres}:/var/lib/postgresql/data
+      - ./configs/postgres/init.d:/docker-entrypoint-initdb.d:ro
+    networks:
+      - TrB_Network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-trb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+
+  ################################################################################
+
+  ############################## NATS  ##########################################
+  nats-server:
+    image: nats:latest
+    container_name: trb-nats-server
+    restart: unless-stopped
+    ports:
+      - "4222:4222"
+      - "6222:6222"
+      - "8222:8222"
+    volumes:
+      - ./configs/nats-server/nats-server.conf:/nats-server.conf
+      - ./volumes/jetstream:/jetstream
+    command: -c /nats-server.conf --js --sd /jetstream -p 4222 -m 8222
+    networks:
+      TrB_Network:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  #####################################################################################
+
+  ############################## MONITORING  ##########################################
+  # Логи: Vector (docker logs) → OTLP :4318 → ClickStack collector → otel_* → HyperDX
+  vector:
+    image: timberio/vector:0.51.1-alpine
+    container_name: trb-vector
+    hostname: vector
+    restart: unless-stopped
+    command: ["--config", "/etc/vector/vector.yaml"]
+    environment:
+      TZ: ${SYSTEM_TIMEZONE:-Europe/Moscow}
+    volumes:
+      - ./configs/vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - vector_data:/var/lib/vector
+    ports:
+      - "8686:8686"
+    depends_on:
+      clickhouse-db:
+        condition: service_healthy
+    networks:
+      TrB_Network:
+###############################################################################
+volumes:
+  clickhouse_data:
+  hyperdx_data:
+  vector_data:
+
+networks:
+  TrB_Network:
+    driver: bridge

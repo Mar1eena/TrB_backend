@@ -1,0 +1,6 @@
+.env
+.idea   
+.cursor
+volumes
+historical_candle
+backups
