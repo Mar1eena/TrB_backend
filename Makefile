@@ -52,7 +52,7 @@ test:
 	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_test} -t test:latest
 
 # Последовательная сборка всех Go-сервисов
-services: historicCandle historicCandleScheduler invest data test clickhouse nats
+services: historicCandle historicCandleScheduler invest data test clickhouse nats envoy
 
 gene:
 	protoc -I./configs/clickhouse/format_schemas \
