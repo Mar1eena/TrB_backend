@@ -49,3 +49,13 @@ func (l Logger) Fatalf(msg string, args ...any) {
 func (l Logger) Errorf(msg string, args ...any) {
 	l.Error().Msgf(msg, args...)
 }
+
+// WithTrace возвращает новый логгер с полями trace_id, span_id и parent_span_id.
+func (l Logger) WithTrace(traceID, spanID string, parentSpanID ...string) Logger {
+	ctx := l.With().Str("trace_id", traceID).Str("span_id", spanID)
+	if len(parentSpanID) > 0 && parentSpanID[0] != "" {
+		ctx = ctx.Str("parent_span_id", parentSpanID[0])
+	}
+	return Logger{Logger: ctx.Logger()}
+}
+

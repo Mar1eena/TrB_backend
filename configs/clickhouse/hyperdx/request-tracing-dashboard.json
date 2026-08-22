@@ -1,0 +1,467 @@
+{
+  "name": "TrB Request Journey & gRPC Tracing",
+  "tags": ["trb", "grpc", "tracing", "requests", "e2e"],
+  "containers": [
+    {
+      "id": "overview",
+      "title": "1. Архитектура и ключевые метрики запросов",
+      "collapsed": false,
+      "collapsible": true,
+      "bordered": true
+    },
+    {
+      "id": "traffic",
+      "title": "2. Трафик и задержки по сервисам и этапам",
+      "collapsed": false,
+      "collapsible": true,
+      "bordered": true
+    },
+    {
+      "id": "traces",
+      "title": "3. Сквозной путь запроса (Distributed Trace Flows)",
+      "collapsed": false,
+      "collapsible": true,
+      "bordered": true
+    },
+    {
+      "id": "errors",
+      "title": "4. Ошибки и запросы к базе данных в цепочках",
+      "collapsed": false,
+      "collapsible": true,
+      "bordered": true
+    }
+  ],
+  "filters": [
+    {
+      "id": "6a89c0001deb091cad25f601",
+      "type": "QUERY_EXPRESSION",
+      "name": "Service",
+      "expression": "ServiceName",
+      "whereLanguage": "sql",
+      "source": "6a881dda51923ca161d8474d"
+    },
+    {
+      "id": "6a89c0001deb091cad25f602",
+      "type": "QUERY_EXPRESSION",
+      "name": "Trace ID",
+      "expression": "TraceId",
+      "where": "TraceId != ''",
+      "whereLanguage": "sql",
+      "source": "6a881dda51923ca161d8474d"
+    },
+    {
+      "id": "6a89c0001deb091cad25f603",
+      "type": "QUERY_EXPRESSION",
+      "name": "gRPC Method",
+      "expression": "LogAttributes['grpc.method']",
+      "where": "LogAttributes['grpc.method'] != ''",
+      "whereLanguage": "sql",
+      "source": "6a881dda51923ca161d8474d"
+    },
+    {
+      "id": "6a89c0001deb091cad25f604",
+      "type": "QUERY_EXPRESSION",
+      "name": "gRPC Status",
+      "expression": "LogAttributes['grpc.code']",
+      "where": "LogAttributes['grpc.code'] != ''",
+      "whereLanguage": "sql",
+      "source": "6a881dda51923ca161d8474d"
+    }
+  ],
+  "tiles": [
+    {
+      "id": "trace_md_overview",
+      "containerId": "overview",
+      "x": 0,
+      "y": 0,
+      "w": 24,
+      "h": 3,
+      "config": {
+        "displayType": "markdown",
+        "markdown": "### 🚀 Сквозной мониторинг пути запросов в TrB\nДашборд отображает полный жизненный цикл запроса между микросервисами через **W3C TraceContext** (`trace_id`, `span_id`, `parent_span_id`):\n1. **Ingress (Envoy)** ➔ Входящий HTTP/gRPC запрос снаружи (`:8081`).\n2. **gRPC Сервер (`rpc.kind: server`)** ➔ Приём запроса сервисом, привязка к существующему `trace_id` или создание нового.\n3. **Downstream вызов (`rpc.kind: client`)** ➔ Межсервисный вызов (например, `test` ➔ `data` или `test` ➔ `invest`), передающий `traceparent` заголовок.\n4. **Хранилище (`db.system: clickhouse`)** ➔ Запрос к базе данных, выполняемый в контексте того же трейса.\n\n*Совет:* Используйте фильтр **Trace ID** вверху, чтобы изолировать всю цепочку одного конкретного запроса.",
+        "source": "",
+        "where": "",
+        "select": [],
+        "name": "Архитектура сквозной трассировки"
+      }
+    },
+    {
+      "id": "trace_kpi_total",
+      "containerId": "overview",
+      "x": 0,
+      "y": 3,
+      "w": 4,
+      "h": 3,
+      "config": {
+        "displayType": "number",
+        "select": [
+          {
+            "alias": "Всего gRPC вызовов",
+            "aggFn": "count",
+            "aggCondition": "LogAttributes['rpc.system'] = 'grpc'",
+            "aggConditionLanguage": "sql",
+            "isDelta": false,
+            "valueExpression": ""
+          }
+        ],
+        "source": "6a881dda51923ca161d8474d",
+        "where": "",
+        "numberFormat": {
+          "output": "number",
+          "thousandSeparated": true,
+          "average": true
+        },
+        "color": "chart-blue",
+        "backgroundChart": {
+          "type": "area"
+        },
+        "name": "Всего gRPC вызовов"
+      }
+    },
+    {
+      "id": "trace_kpi_server",
+      "containerId": "overview",
+      "x": 4,
+      "y": 3,
+      "w": 5,
+      "h": 3,
+      "config": {
+        "displayType": "number",
+        "select": [
+          {
+            "alias": "Входящие (Server)",
+            "aggFn": "count",
+            "aggCondition": "LogAttributes['rpc.kind'] = 'server'",
+            "aggConditionLanguage": "sql",
+            "isDelta": false,
+            "valueExpression": ""
+          }
+        ],
+        "source": "6a881dda51923ca161d8474d",
+        "where": "",
+        "numberFormat": {
+          "output": "number",
+          "thousandSeparated": true
+        },
+        "color": "chart-green",
+        "backgroundChart": {
+          "type": "area",
+          "color": "chart-green"
+        },
+        "name": "Входящие запросы (Server)"
+      }
+    },
+    {
+      "id": "trace_kpi_client",
+      "containerId": "overview",
+      "x": 9,
+      "y": 3,
+      "w": 5,
+      "h": 3,
+      "config": {
+        "displayType": "number",
+        "select": [
+          {
+            "alias": "Межсервисные (Client)",
+            "aggFn": "count",
+            "aggCondition": "LogAttributes['rpc.kind'] = 'client'",
+            "aggConditionLanguage": "sql",
+            "isDelta": false,
+            "valueExpression": ""
+          }
+        ],
+        "source": "6a881dda51923ca161d8474d",
+        "where": "",
+        "numberFormat": {
+          "output": "number",
+          "thousandSeparated": true
+        },
+        "color": "chart-cyan",
+        "backgroundChart": {
+          "type": "area",
+          "color": "chart-cyan"
+        },
+        "name": "Межсервисные вызовы (Client)"
+      }
+    },
+    {
+      "id": "trace_kpi_errors",
+      "containerId": "overview",
+      "x": 14,
+      "y": 3,
+      "w": 5,
+      "h": 3,
+      "config": {
+        "displayType": "number",
+        "select": [
+          {
+            "alias": "Ошибки gRPC",
+            "aggFn": "count",
+            "aggCondition": "LogAttributes['grpc.code'] NOT IN ('', 'OK', '0')",
+            "aggConditionLanguage": "sql",
+            "isDelta": false,
+            "valueExpression": ""
+          }
+        ],
+        "source": "6a881dda51923ca161d8474d",
+        "where": "",
+        "numberFormat": {
+          "output": "number",
+          "thousandSeparated": true
+        },
+        "color": "chart-error",
+        "colorRules": [
+          {
+            "operator": "gt",
+            "value": 0,
+            "color": "chart-error",
+            "label": "Есть ошибки"
+          }
+        ],
+        "backgroundChart": {
+          "type": "area",
+          "color": "chart-error"
+        },
+        "name": "Ошибки gRPC"
+      }
+    },
+    {
+      "id": "trace_kpi_avg_lat",
+      "containerId": "overview",
+      "x": 19,
+      "y": 3,
+      "w": 5,
+      "h": 3,
+      "config": {
+        "displayType": "number",
+        "select": [
+          {
+            "alias": "Средняя задержка",
+            "aggFn": "avg",
+            "aggCondition": "LogAttributes['duration_ms'] != ''",
+            "aggConditionLanguage": "sql",
+            "isDelta": false,
+            "valueExpression": "toFloat64OrZero(LogAttributes['duration_ms'])"
+          }
+        ],
+        "source": "6a881dda51923ca161d8474d",
+        "where": "",
+        "numberFormat": {
+          "output": "duration",
+          "factor": 0.001
+        },
+        "color": "chart-purple",
+        "backgroundChart": {
+          "type": "area",
+          "color": "chart-purple"
+        },
+        "name": "Средняя задержка RPC"
+      }
+    },
+    {
+      "id": "trace_traffic_by_service",
+      "containerId": "traffic",
+      "x": 0,
+      "y": 0,
+      "w": 12,
+      "h": 6,
+      "config": {
+        "groupBy": "ServiceName",
+        "numberFormat": {
+          "output": "number",
+          "thousandSeparated": true
+        },
+        "displayType": "stacked_bar",
+        "select": [
+          {
+            "alias": "Вызовы",
+            "aggFn": "count",
+            "aggCondition": "LogAttributes['rpc.system'] = 'grpc' OR LogAttributes['db.system'] = 'clickhouse'",
+            "aggConditionLanguage": "sql",
+            "isDelta": false,
+            "valueExpression": ""
+          }
+        ],
+        "source": "6a881dda51923ca161d8474d",
+        "where": "",
+        "seriesLimit": 12,
+        "name": "Трафик по сервисам (gRPC + ClickHouse)"
+      }
+    },
+    {
+      "id": "trace_lat_by_service",
+      "containerId": "traffic",
+      "x": 12,
+      "y": 0,
+      "w": 12,
+      "h": 6,
+      "config": {
+        "groupBy": "ServiceName",
+        "numberFormat": {
+          "output": "duration",
+          "factor": 0.001
+        },
+        "displayType": "line",
+        "select": [
+          {
+            "alias": "P95 Latency",
+            "aggFn": "quantile",
+            "level": 0.95,
+            "aggCondition": "LogAttributes['duration_ms'] != ''",
+            "aggConditionLanguage": "sql",
+            "isDelta": false,
+            "valueExpression": "toFloat64OrZero(LogAttributes['duration_ms'])"
+          },
+          {
+            "alias": "Avg Latency",
+            "aggFn": "avg",
+            "aggCondition": "LogAttributes['duration_ms'] != ''",
+            "aggConditionLanguage": "sql",
+            "isDelta": false,
+            "valueExpression": "toFloat64OrZero(LogAttributes['duration_ms'])"
+          }
+        ],
+        "source": "6a881dda51923ca161d8474d",
+        "where": "",
+        "seriesLimit": 10,
+        "name": "Задержка (P95 и Avg) по сервисам"
+      }
+    },
+    {
+      "id": "trace_pie_rpc_kind",
+      "containerId": "traffic",
+      "x": 0,
+      "y": 6,
+      "w": 8,
+      "h": 6,
+      "config": {
+        "groupBy": "LogAttributes['rpc.kind']",
+        "displayType": "pie",
+        "select": [
+          {
+            "alias": "Вызовы",
+            "aggFn": "count",
+            "aggCondition": "LogAttributes['rpc.kind'] != ''",
+            "aggConditionLanguage": "sql",
+            "isDelta": false,
+            "valueExpression": ""
+          }
+        ],
+        "source": "6a881dda51923ca161d8474d",
+        "where": "",
+        "seriesLimit": 10,
+        "name": "Этапы вызова: Server vs Client"
+      }
+    },
+    {
+      "id": "trace_table_methods",
+      "containerId": "traffic",
+      "x": 8,
+      "y": 6,
+      "w": 16,
+      "h": 6,
+      "config": {
+        "configType": "sql",
+        "displayType": "table",
+        "name": "Сводка по gRPC методам (Задержки и Ошибки)",
+        "connection": "6a881dd951923ca161d84746",
+        "sqlTemplate": "SELECT\n  LogAttributes['grpc.service'] AS grpc_service,\n  LogAttributes['grpc.method'] AS grpc_method,\n  count() AS total_calls,\n  countIf(LogAttributes['rpc.kind'] = 'server') AS server_calls,\n  countIf(LogAttributes['rpc.kind'] = 'client') AS client_calls,\n  round(avg(toFloat64OrZero(LogAttributes['duration_ms'])), 2) AS avg_ms,\n  max(toFloat64OrZero(LogAttributes['duration_ms'])) AS max_ms,\n  countIf(LogAttributes['grpc.code'] NOT IN ('', 'OK', '0')) AS errors\nFROM $__sourceTable\nWHERE $__timeFilter_ms(Timestamp)\n  AND $__filters\n  AND LogAttributes['grpc.method'] != ''\nGROUP BY grpc_service, grpc_method\nORDER BY total_calls DESC\nLIMIT 50",
+        "source": "6a881dda51923ca161d8474d",
+        "onClick": {
+          "type": "search",
+          "target": {
+            "mode": "id",
+            "id": "6a881dda51923ca161d8474d"
+          },
+          "whereLanguage": "sql",
+          "filters": [
+            {
+              "kind": "expressionTemplate",
+              "expression": "LogAttributes['grpc.method']",
+              "template": "{{grpc_method}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "trace_flows_chain_table",
+      "containerId": "traces",
+      "x": 0,
+      "y": 0,
+      "w": 24,
+      "h": 8,
+      "config": {
+        "configType": "sql",
+        "displayType": "table",
+        "name": "Сквозные цепочки вызовов по Trace ID",
+        "connection": "6a881dd951923ca161d84746",
+        "sqlTemplate": "SELECT\n  TraceId,\n  arrayStringConcat(groupArray(concat(ServiceName, ' [', if(LogAttributes['rpc.kind'] != '', LogAttributes['rpc.kind'], if(LogAttributes['db.system'] != '', 'db', 'app')), ': ', if(LogAttributes['grpc.method'] != '', LogAttributes['grpc.method'], if(LogAttributes['db.operation'] != '', LogAttributes['db.operation'], ServiceName)), ']')), ' ➔ ') AS trace_path,\n  uniqExact(ServiceName) AS unique_services,\n  count() AS total_spans,\n  round(sum(toFloat64OrZero(LogAttributes['duration_ms'])), 2) AS sum_duration_ms,\n  countIf(LogAttributes['grpc.code'] NOT IN ('', 'OK', '0') OR SeverityText IN ('ERROR', 'FATAL')) AS errors,\n  min(Timestamp) AS start_time,\n  max(Timestamp) AS end_time\nFROM $__sourceTable\nWHERE $__timeFilter_ms(Timestamp)\n  AND $__filters\n  AND TraceId != ''\nGROUP BY TraceId\nORDER BY end_time DESC\nLIMIT 50",
+        "source": "6a881dda51923ca161d8474d",
+        "onClick": {
+          "type": "search",
+          "target": {
+            "mode": "id",
+            "id": "6a881dda51923ca161d8474d"
+          },
+          "whereLanguage": "sql",
+          "filters": [
+            {
+              "kind": "expressionTemplate",
+              "expression": "TraceId",
+              "template": "{{TraceId}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "trace_spans_stream",
+      "containerId": "traces",
+      "x": 0,
+      "y": 8,
+      "w": 24,
+      "h": 8,
+      "config": {
+        "select": "Timestamp, TraceId, SpanId, LogAttributes['parent_span_id'] as parent_span, ServiceName, LogAttributes['rpc.kind'] as kind, LogAttributes['grpc.service'] as grpc_service, LogAttributes['grpc.method'] as method, LogAttributes['grpc.code'] as code, LogAttributes['duration_ms'] as duration_ms, LogAttributes['peer.addr'] as peer, Body",
+        "where": "TraceId != ''",
+        "displayType": "search",
+        "source": "6a881dda51923ca161d8474d",
+        "name": "Детальный поток спанов и шагов запроса (Span Stream)",
+        "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "trace_errors_search",
+      "containerId": "errors",
+      "x": 0,
+      "y": 0,
+      "w": 12,
+      "h": 8,
+      "config": {
+        "select": "Timestamp, TraceId, SpanId, ServiceName, LogAttributes['grpc.method'] as method, LogAttributes['grpc.code'] as code, LogAttributes['grpc.error_message'] as error_msg, Body",
+        "where": "(LogAttributes['grpc.code'] != '' AND LogAttributes['grpc.code'] NOT IN ('OK', '0')) OR SeverityText IN ('ERROR', 'FATAL')",
+        "displayType": "search",
+        "source": "6a881dda51923ca161d8474d",
+        "name": "Ошибки и сбои в цепочках вызовов",
+        "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "trace_clickhouse_search",
+      "containerId": "errors",
+      "x": 12,
+      "y": 0,
+      "w": 12,
+      "h": 8,
+      "config": {
+        "select": "Timestamp, TraceId, ServiceName, LogAttributes['db.operation'] as op, LogAttributes['duration_ms'] as duration_ms, LogAttributes['db.statement'] as statement",
+        "where": "LogAttributes['db.system'] = 'clickhouse'",
+        "displayType": "search",
+        "source": "6a881dda51923ca161d8474d",
+        "name": "ClickHouse запросы в рамках цепочек",
+        "whereLanguage": "sql"
+      }
+    }
+  ]
+}

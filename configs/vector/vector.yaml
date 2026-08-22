@@ -38,6 +38,8 @@ transforms:
       severity_text = "INFO"
       severity_number = 9
       body = raw_msg
+      trace_id = ""
+      span_id = ""
       log_attrs = [
         {"key": "log.iostream", "value": {"stringValue": stream}},
         {"key": "com.docker.compose.service", "value": {"stringValue": service}}
@@ -49,6 +51,8 @@ transforms:
         level = downcase(string(j.level) ?? string(j.severity) ?? string(j.l) ?? "info")
         body = string(j.message) ?? string(j.msg) ?? string(j.m) ?? raw_msg
         err = string(j.error) ?? string(j.e) ?? ""
+        trace_id = string(j.trace_id) ?? string(j.traceId) ?? ""
+        span_id = string(j.span_id) ?? string(j.spanId) ?? ""
         if err != "" {
           log_attrs = push(log_attrs, {"key": "error", "value": {"stringValue": err}})
         }
@@ -167,7 +171,9 @@ transforms:
               "severityNumber": severity_number,
               "severityText": severity_text,
               "body": {"stringValue": body},
-              "attributes": log_attrs
+              "attributes": log_attrs,
+              "traceId": trace_id,
+              "spanId": span_id
             }]
           }]
         }]
