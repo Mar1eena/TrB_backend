@@ -1,7 +1,7 @@
 package scheduler_test
 
 import (
-	. "github.com/Mar1eena/TrB_V3/internal/services/historicCandle_scheduler/app"
+	. "github.com/Mar1eena/TrB_V3/internal/services/historicCandle_scheduler/pkg"
 
 	"errors"
 	"testing"

@@ -27,8 +27,8 @@ x-services-config: &services-config
     - INVEST_APP_NAME
     - INVEST_API_URL
     - INVEST_API_URL_DOCKER
-    - DATA_API_URL
-    - DATA_API_URL_DOCKER
+    - POSTGRE_API_URL
+    - POSTGRE_API_URL_DOCKER
     - CLICKHOUSE_API_URL
     - CLICKHOUSE_API_URL_DOCKER
     - INTERVAL_UPDATE_HC
@@ -85,7 +85,7 @@ services:
     depends_on:
       - nats-server
       - clickhouse-db
-      - postgres
+      - postgre-db
 
   invest:
     <<: [*services-config]
@@ -94,7 +94,7 @@ services:
     build:
       <<: *go-build
       args:
-        CMD_PATH: ./internal/services/api/invest/cmd/main.go
+        CMD_PATH: ./internal/services/invest/cmd/main.go
 
   nats:
     <<: [*services-config]
@@ -103,22 +103,22 @@ services:
     build:
       <<: *go-build
       args:
-        CMD_PATH: ./internal/services/api/nats/cmd/main.go
+        CMD_PATH: ./internal/services/nats/cmd/main.go
     depends_on:
       - nats-server
 
-  data:
+  postgre:
     <<: [*services-config]
-    container_name: trb-data
-    image: data:latest
+    container_name: trb-postgre
+    image: postgre:latest
     build:
       <<: *go-build
       args:
-        CMD_PATH: ./internal/services/api/data/cmd/main.go
+        CMD_PATH: ./internal/services/postgre/cmd/main.go
     depends_on:
       clickhouse-db:
         condition: service_healthy
-      postgres:
+      postgre-db:
         condition: service_healthy
 
   test:
@@ -145,7 +145,7 @@ services:
     build:
       <<: *go-build
       args:
-        CMD_PATH: ./internal/services/api/clickhouse/cmd/main.go
+        CMD_PATH: ./internal/services/clickhouse/cmd/main.go
     depends_on:
       clickhouse-db:
         condition: service_healthy
@@ -175,7 +175,7 @@ services:
       - ./configs/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
     depends_on:
       - nats
-      - data
+      - postgre
       - clickhouse
       - invest
     deploy:
@@ -291,9 +291,9 @@ services:
           cpus: "0.5"
           memory: 512M
 
-  postgres:
+  postgre-db:
     image: postgres:16-alpine
-    container_name: trb-postgres
+    container_name: trb-postgre-db
     restart: unless-stopped
     ports:
       - "5432:5432"

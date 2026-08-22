@@ -8,13 +8,13 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/env"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
-	chclient "github.com/Mar1eena/TrB_V3/internal/services/clickhouse/client"
-	investclient "github.com/Mar1eena/TrB_V3/internal/services/invest/client"
-	"github.com/Mar1eena/TrB_V3/internal/services/test/server"
+	"github.com/Mar1eena/TrB_V3/internal/services/clickhouse/server"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 )
@@ -27,53 +27,40 @@ func App() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var (
-		investConn *grpc.ClientConn
-		chConn     *grpc.ClientConn
-	)
+	var ch driver.Conn
 	defer func() {
-		if investConn != nil {
-			if err := investConn.Close(); err != nil {
-				l.Error().Err(err).Msg("ошибка закрытия соединения с invest")
-			}
-		}
-		if chConn != nil {
-			if err := chConn.Close(); err != nil {
-				l.Error().Err(err).Msg("ошибка закрытия соединения с clickhouse")
+		if ch != nil {
+			if err := ch.Close(); err != nil {
+				l.Error().Err(err).Msg("ошибка закрытия соединения с ClickHouse")
 			}
 		}
 	}()
 
-	g := wait.NewGroup(ctx, l)
-	investSlot := wait.Go(g, "invest", func(ctx context.Context) (*grpc.ClientConn, error) {
-		return investclient.DialFromEnv()
+	ch, err := wait.Until(ctx, l, "ClickHouse", func(ctx context.Context) (driver.Conn, error) {
+		return clickhouse.Connect(ctx, clickhouse.ClickHouse_config())
 	})
-	chSlot := wait.Go(g, "clickhouse", func(ctx context.Context) (*grpc.ClientConn, error) {
-		return chclient.DialFromEnv()
-	})
-	if err := g.Wait(); err != nil {
+	if err != nil {
 		l.Info().Err(err).Msg("сервис остановлен до подключения к зависимостям")
 		return
 	}
-	investConn = investSlot.Get()
-	chConn = chSlot.Get()
+
+	if err := clickhouse.EnsureShtSchema(ctx, ch); err != nil {
+		l.Fatal().Err(err).Msg("не удалось подготовить схему TrB.sht")
+	}
 
 	port := env.Get("PORT")
 	if port == "" {
 		port = "9091"
 	}
+
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		l.Fatal().Err(err).Msg("не удалось начать прослушивание порта " + port)
 	}
-	l.Info().Str("port", port).Msg("test слушает gRPC")
+	l.Info().Str("port", port).Msg("clickhouse слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
-	service := server.New(
-		investclient.NewInstruments(investConn),
-		chclient.New(chConn),
-		l,
-	)
+	service := server.New(ch, l)
 	server.Register(gs, service)
 
 	eg, egCtx := errgroup.WithContext(ctx)

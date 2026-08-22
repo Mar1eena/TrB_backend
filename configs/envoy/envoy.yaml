@@ -106,14 +106,14 @@ static_resources:
                         - match:
                             prefix: /trb.postgresql.v1.PostgreSQL
                           route:
-                            cluster: data
+                            cluster: postgre
                             timeout: 60s
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
                             prefix: /v1/scheduler
                           route:
-                            cluster: data
+                            cluster: postgre
                             timeout: 60s
                             request_mirror_policies:
                               cluster: debuger_grpc
@@ -248,7 +248,7 @@ static_resources:
                     socket_address:
                       address: nats
                       port_value: 9091
-    - name: data
+    - name: postgre
       connect_timeout: 0.25s
       lb_policy: ROUND_ROBIN
       dns_lookup_family: V4_ONLY
@@ -259,13 +259,13 @@ static_resources:
           explicit_http_config:
             http2_protocol_options: {}
       load_assignment:
-        cluster_name: data
+        cluster_name: postgre
         endpoints:
           - lb_endpoints:
               - endpoint:
                   address:
                     socket_address:
-                      address: data
+                      address: postgre
                       port_value: 9091
     - name: test
       connect_timeout: 0.25s

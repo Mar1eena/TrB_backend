@@ -1,7 +1,7 @@
 package historiccandle_test
 
 import (
-	. "github.com/Mar1eena/TrB_V3/internal/services/historicCandle/app"
+	. "github.com/Mar1eena/TrB_V3/internal/services/historicCandle/pkg"
 
 	"testing"
 

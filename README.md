@@ -42,6 +42,7 @@ Tinkoff Invest API
 | Компонент | Назначение | Порт (хост) |
 |---|---|---|
 | ClickHouse / ClickStack | Рыночные данные + логи (OTLP) | 8123, 9000, 4317/4318, **8080** (HyperDX) |
+| PostgreSQL (`postgre-db`) | Цели планировщика | 5432 |
 | NATS JetStream | Очередь сообщений | 4222 |
 | Redis | Кэш свечей для индикаторов | 6380 |
 | Envoy | gRPC/REST-шлюз | 8081, 9901 (admin) |
@@ -256,9 +257,9 @@ go run ./internal/services/manager_indicators_executor/cmd/
 
 ---
 
-### `api/invest` (T-Bank Invest API)
+### `invest` (T-Bank Invest API)
 
-Единый gRPC-прокси на основе `opensource.tbank.ru/invest/invest-go/proto` в `internal/services/api/invest/`. Один процесс регистрирует все T-Invest сервисы:
+Единый gRPC-прокси на основе `opensource.tbank.ru/invest/invest-go/proto` в `internal/services/invest/`. Один процесс регистрирует все T-Invest сервисы:
 
 - `UsersService` — счета, тариф, маржинальные показатели, инфо, переводы
 - `InstrumentsService` — справочники акций, облигаций, валют, ETF, фьючерсов, опционов
@@ -278,7 +279,7 @@ make upd
 Локально:
 
 ```bash
-go run ./internal/services/api/invest/cmd/
+go run ./internal/services/invest/cmd/
 ```
 
 ---
@@ -311,7 +312,7 @@ go run ./internal/services/gateway/cmd/
 
 ---
 
-### `data`
+### `postgre`
 
 gRPC API веб-клиента к PostgreSQL: цели планировщика. Браузер ходит через Envoy (gRPC-Web / JSON), как к `nats`. Произвольный SQL с клиента не принимается. Справочник акций и история догрузок — сервис `clickhouse`.
 
@@ -322,11 +323,11 @@ gRPC API веб-клиента к PostgreSQL: цели планировщика.
 | `ListSchedulerTargets` | Цели догрузки свечей |
 | `SyncSchedulerTargets` | Замена набора целей |
 
-Новый экран: добавить RPC в proto, `make gene` в TrB_proto, опубликовать модуль, обновить `github.com/Mar1eena/trb_proto` в `go.mod`, обработчик в `internal/services/api/data/server`. Envoy уже проксирует весь префикс сервиса.
+Новый экран: добавить RPC в proto, `make gene` в TrB_proto, опубликовать модуль, обновить `github.com/Mar1eena/trb_proto` в `go.mod`, обработчик в `internal/services/postgre/server`. Envoy уже проксирует весь префикс сервиса.
 
 ```bash
-make data
-go run ./internal/services/api/data/cmd/
+make postgre
+go run ./internal/services/postgre/cmd/
 ```
 
 JSON (через Envoy :8081): `GET /v1/scheduler/targets`, `PUT /v1/scheduler/targets`.
@@ -348,7 +349,7 @@ gRPC API ClickHouse: админка схемы (DDL) и бизнес-логик�
 
 ```bash
 make clickhouse
-go run ./internal/services/api/clickhouse/cmd/
+go run ./internal/services/clickhouse/cmd/
 ```
 
 JSON (через Envoy :8081): `GET /v1/clickhouse/ping`, `GET /v1/instruments`, `GET /v1/historic-candles/last-downloads`.
@@ -415,8 +416,8 @@ Envoy проксирует gRPC-сервисы и предоставляет JSO
 | `/tinkoff.public.invest.api.contract.v1.*` | invest |
 | `/trb.nats.v1.Nats_Admin` | nats (gRPC) |
 | `/v1/nats` | nats (JSON REST, grpc-json-transcoder) |
-| `/trb.postgresql.v1.PostgreSQL` | data (gRPC) |
-| `/v1/scheduler` | data (JSON REST) |
+| `/trb.postgresql.v1.PostgreSQL` | postgre (gRPC) |
+| `/v1/scheduler` | postgre (JSON REST) |
 | `/trb.clickhouse.v1.ClickHouse_Admin` | clickhouse admin (gRPC) |
 | `/trb.clickhouse.v1.ClickHouse` | clickhouse (gRPC) |
 | `/v1/clickhouse`, `/v1/instruments`, `/v1/historic-candles` | clickhouse (JSON REST) |
@@ -516,9 +517,9 @@ HTTP ClickHouse: `http://localhost:8123`. TTL логов — по схеме Cli
 go run ./internal/services/historicCandle/cmd/
 go run ./internal/services/shares/cmd/
 go run ./internal/services/manager_indicators/cmd/
-go run ./internal/services/api/invest/cmd/
-go run ./internal/services/api/data/cmd/
-go run ./internal/services/api/clickhouse/cmd/
+go run ./internal/services/invest/cmd/
+go run ./internal/services/postgre/cmd/
+go run ./internal/services/clickhouse/cmd/
 ```
 
 Генерация protobuf-схем для ClickHouse/NATS:
@@ -550,6 +551,12 @@ TrB_backend/
 ├── internal/
 │   ├── pkg/              # общие библиотеки (investgo, clickhouse, trb_nats, ...)
 │   └── services/         # микросервисы
+│       └── <svc>/
+│           ├── app/      # точка входа процесса
+│           ├── server/   # gRPC-обработчики (если есть)
+│           ├── pkg/      # общие функции только этого сервиса
+│           ├── client/   # gRPC-клиент (у api-сервисов)
+│           └── tests/    # тесты
 ├── build/docker/         # Dockerfile'ы
 ├── tests/                # интеграционные тесты и утилиты
 ├── docker-compose.yml
@@ -560,6 +567,8 @@ TrB_backend/
 Веб-UI: `../TrB_frontend` (Vite + React, dev-сервер на порту 3002, прокси на Envoy `:8081` и gateway `:9092`).
 
 ### Общие пакеты (`internal/pkg/`)
+
+Общее между сервисами — в `internal/pkg/`. Хелперы одного сервиса (конвертация, SQL, разбор subject) живут в `internal/services/<svc>/pkg/` и не тащатся в `server`.
 
 | Пакет | Описание |
 |---|---|

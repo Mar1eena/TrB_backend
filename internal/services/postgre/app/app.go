@@ -8,13 +8,15 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
+	"github.com/Mar1eena/TrB_V3/internal/pkg/db/postgres"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/env"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
-	chclient "github.com/Mar1eena/TrB_V3/internal/services/clickhouse/client"
-	investclient "github.com/Mar1eena/TrB_V3/internal/services/invest/client"
-	"github.com/Mar1eena/TrB_V3/internal/services/test/server"
+	"github.com/Mar1eena/TrB_V3/internal/services/postgre/server"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 )
@@ -28,52 +30,59 @@ func App() {
 	defer stop()
 
 	var (
-		investConn *grpc.ClientConn
-		chConn     *grpc.ClientConn
+		ch driver.Conn
+		pg *pgxpool.Pool
 	)
 	defer func() {
-		if investConn != nil {
-			if err := investConn.Close(); err != nil {
-				l.Error().Err(err).Msg("ошибка закрытия соединения с invest")
+		if ch != nil {
+			if err := ch.Close(); err != nil {
+				l.Error().Err(err).Msg("ошибка закрытия соединения с ClickHouse")
 			}
 		}
-		if chConn != nil {
-			if err := chConn.Close(); err != nil {
-				l.Error().Err(err).Msg("ошибка закрытия соединения с clickhouse")
-			}
+		if pg != nil {
+			pg.Close()
 		}
 	}()
 
 	g := wait.NewGroup(ctx, l)
-	investSlot := wait.Go(g, "invest", func(ctx context.Context) (*grpc.ClientConn, error) {
-		return investclient.DialFromEnv()
+	chSlot := wait.Go(g, "ClickHouse", func(ctx context.Context) (driver.Conn, error) {
+		return clickhouse.Connect(ctx, clickhouse.ClickHouse_config())
 	})
-	chSlot := wait.Go(g, "clickhouse", func(ctx context.Context) (*grpc.ClientConn, error) {
-		return chclient.DialFromEnv()
+	pgSlot := wait.Go(g, "PostgreSQL", func(ctx context.Context) (*pgxpool.Pool, error) {
+		pool, err := postgres.Connect(ctx, postgres.ConfigFromEnv())
+		if err != nil {
+			return nil, err
+		}
+		if err := postgres.EnsureSchema(ctx, pool); err != nil {
+			pool.Close()
+			return nil, err
+		}
+		return pool, nil
 	})
 	if err := g.Wait(); err != nil {
 		l.Info().Err(err).Msg("сервис остановлен до подключения к зависимостям")
 		return
 	}
-	investConn = investSlot.Get()
-	chConn = chSlot.Get()
+	ch = chSlot.Get()
+	pg = pgSlot.Get()
+
+	if err := clickhouse.EnsureShtSchema(ctx, ch); err != nil {
+		l.Fatal().Err(err).Msg("не удалось подготовить схему TrB.sht")
+	}
 
 	port := env.Get("PORT")
 	if port == "" {
 		port = "9091"
 	}
+
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		l.Fatal().Err(err).Msg("не удалось начать прослушивание порта " + port)
 	}
-	l.Info().Str("port", port).Msg("test слушает gRPC")
+	l.Info().Str("port", port).Msg("data слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
-	service := server.New(
-		investclient.NewInstruments(investConn),
-		chclient.New(chConn),
-		l,
-	)
+	service := server.New(ch, pg, l)
 	server.Register(gs, service)
 
 	eg, egCtx := errgroup.WithContext(ctx)

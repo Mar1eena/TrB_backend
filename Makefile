@@ -1,16 +1,16 @@
 name = trb
 envoy_config = ./configs/envoy/envoy.yaml
 go_dockerfile = ./build/docker/services/go/Dockerfile
-cmd_nats = ./internal/services/api/nats/cmd/main.go
-cmd_clickhouse = ./internal/services/api/clickhouse/cmd/main.go
+cmd_nats = ./internal/services/nats/cmd/main.go
+cmd_clickhouse = ./internal/services/clickhouse/cmd/main.go
 cmd_historiccandle = ./internal/services/historicCandle/cmd/main.go
 cmd_historiccandle_scheduler = ./internal/services/historicCandle_scheduler/cmd/main.go
-cmd_invest = ./internal/services/api/invest/cmd/main.go
-cmd_data = ./internal/services/api/data/cmd/main.go
+cmd_invest = ./internal/services/invest/cmd/main.go
+cmd_postgre = ./internal/services/postgre/cmd/main.go
 cmd_test = ./internal/services/test/cmd/main.go
 TRB_PROTO_REF ?= main
 
-.PHONY: build up upd down envoy nats clickhouse historicCandle historicCandleScheduler data test services gene invest ver
+.PHONY: build up upd down envoy nats clickhouse historicCandle historicCandleScheduler postgre test services gene invest ver
 
 up:
 	docker-compose --project-name=${name} up -d
@@ -39,8 +39,8 @@ historicCandleScheduler:
 invest:
 	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_invest} -t invest:latest
 
-data:
-	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_data} -t data:latest
+postgre:
+	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_postgre} -t postgre:latest
 
 test:
 	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_test} -t test:latest
@@ -50,7 +50,7 @@ ver:
 	go mod tidy
 
 # Сначала обновляет trb_proto, затем собирает все сервисы
-build: gene ver historicCandle historicCandleScheduler invest data test clickhouse nats envoy
+build: gene ver historicCandle historicCandleScheduler invest postgre test clickhouse nats envoy
 
 make upd: build up
 

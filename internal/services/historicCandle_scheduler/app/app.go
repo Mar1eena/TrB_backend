@@ -3,10 +3,8 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +16,7 @@ import (
 	"github.com/Mar1eena/TrB_V3/internal/pkg/env"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
+	orchpkg "github.com/Mar1eena/TrB_V3/internal/services/historicCandle_scheduler/pkg"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
@@ -156,7 +155,7 @@ func tick(ctx context.Context, conn driver.Conn, pg *pgxpool.Pool, ncl *trb_nats
 			candidates = candidates[:cfg.maxPerTick]
 		}
 		for _, c := range candidates {
-			subject := taskSubject(cfg.subjectPrefix, c.UID, int32(interval))
+			subject := orchpkg.TaskSubject(cfg.subjectPrefix, c.UID, int32(interval))
 			if err := publishTask(ncl, subject, c.UID, int32(interval)); err != nil {
 				if errors.Is(err, errSubjectOccupied) {
 					skipped++
@@ -204,7 +203,7 @@ func loadTargetsByInterval(ctx context.Context, pg *pgxpool.Pool, cfg config) (m
 }
 
 func selectCandidates(ctx context.Context, conn driver.Conn, interval pb.CandleInterval, whitelist []string, cfg config) ([]candidate, error) {
-	col := firstCandleColumn(interval)
+	col := orchpkg.FirstCandleColumn(interval)
 	minLagSec := int64(cfg.minLag.Seconds())
 	if minLagSec <= 0 {
 		minLagSec = 60
@@ -250,44 +249,10 @@ func publishTask(ncl *trb_nats.Nats, subject, uid string, interval int32) error 
 	}
 	// ExpectLastSequencePerSubject(0) — публикуем только если на subject ещё нет сообщений.
 	_, err = ncl.Jsc.Publish(subject, data, nats.ExpectLastSequencePerSubject(0))
-	if IsSubjectOccupied(err) {
+	if orchpkg.IsSubjectOccupied(err) {
 		return errSubjectOccupied
 	}
 	return err
-}
-
-func IsSubjectOccupied(err error) bool {
-	if err == nil {
-		return false
-	}
-	var api *nats.APIError
-	if errors.As(err, &api) {
-		if api.ErrorCode == nats.JSErrCodeStreamWrongLastSequence {
-			return true
-		}
-		if subjectOccupiedDescription(api.Description) {
-			return true
-		}
-	}
-	return subjectOccupiedDescription(err.Error())
-}
-
-func subjectOccupiedDescription(msg string) bool {
-	s := strings.ToLower(msg)
-	return strings.Contains(s, "wrong last sequence") ||
-		strings.Contains(s, "maximum messages per subject") ||
-		strings.Contains(s, "max messages per subject")
-}
-
-func taskSubject(prefix, uid string, interval int32) string {
-	return fmt.Sprintf("%s.%s.%d", prefix, uid, interval)
-}
-
-func firstCandleColumn(interval pb.CandleInterval) string {
-	if interval == pb.CandleInterval_CANDLE_INTERVAL_1_MIN {
-		return "first_1min_candle_date"
-	}
-	return "first_1day_candle_date"
 }
 
 func configFromEnv() config {
@@ -307,7 +272,7 @@ func configFromEnv() config {
 		minLag:           time.Duration(minLagSec) * time.Second,
 		maxPerTick:       maxPerTick,
 		fallbackInterval: pb.CandleInterval(intervalNum),
-		fallbackUIDs:     splitCSV(env.Get("HCT_ORCH_UIDS")),
+		fallbackUIDs:     orchpkg.SplitCSV(env.Get("HCT_ORCH_UIDS")),
 	}
 }
 
@@ -321,19 +286,4 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
-}
-
-func splitCSV(raw string) []string {
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
