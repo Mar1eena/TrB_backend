@@ -257,7 +257,15 @@ func logServerRPC(ctx context.Context, l zlog.Logger, tc TraceContext, fullMetho
 		Str("peer.addr", peerAddr)
 
 	if tc.ParentSpanID != "" {
-		ev = ev.Str("parent_span_id", tc.ParentSpanID)
+		ev = ev.Str("parent_span_id", tc.ParentSpanID).Bool("is_root", false)
+	} else {
+		ev = ev.Bool("is_root", true)
+	}
+	if tc.CallerService != "" {
+		ev = ev.Str("caller.service", tc.CallerService)
+	}
+	if tc.InitiatorService != "" {
+		ev = ev.Str("initiator.service", tc.InitiatorService)
 	}
 	if clientAddr != "" {
 		ev = ev.Str("client.addr", clientAddr)
@@ -289,9 +297,14 @@ func logClientRPC(ctx context.Context, l zlog.Logger, tc TraceContext, fullMetho
 	switch code {
 	case codes.OK:
 		ev = l.Info()
-	case codes.Canceled, codes.DeadlineExceeded, codes.NotFound, codes.AlreadyExists, codes.InvalidArgument:
+	case codes.Canceled, codes.DeadlineExceeded, codes.NotFound, codes.AlreadyExists, codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied:
 		ev = l.Warn()
+	case codes.Internal, codes.Unknown, codes.DataLoss, codes.FailedPrecondition, codes.OutOfRange, codes.Unimplemented:
+		// Ошибка на стороне удалённого сервера — логируем на клиенте как Warn,
+		// так как сам сервер-исполнитель уже зафиксировал Error (Root cause).
+		ev = l.Warn().Err(err)
 	default:
+		// Сетевой сбой / недоступность соединения (Unavailable и др.)
 		ev = l.Error().Err(err)
 	}
 
@@ -308,7 +321,16 @@ func logClientRPC(ctx context.Context, l zlog.Logger, tc TraceContext, fullMetho
 		Uint32("grpc.status_code", uint32(code)).
 		Int64("duration_ms", dur.Milliseconds()).
 		Int64("duration_us", dur.Microseconds()).
-		Str("peer.addr", target)
+		Str("peer.addr", target).
+		Str("target.service", service)
+
+	currSvc := currentServiceName()
+	if currSvc != "" {
+		ev = ev.Str("caller.service", currSvc)
+	}
+	if tc.InitiatorService != "" {
+		ev = ev.Str("initiator.service", tc.InitiatorService)
+	}
 
 	if tc.ParentSpanID != "" {
 		ev = ev.Str("parent_span_id", tc.ParentSpanID)

@@ -121,3 +121,43 @@ func TestExtractOrGenerateTrace_FallbackHeaders(t *testing.T) {
 		t.Fatalf("unexpected TraceID from UUID: %s", tc2.TraceID)
 	}
 }
+
+func TestExtractOrGenerateTrace_CallerAndInitiator(t *testing.T) {
+	md := metadata.Pairs(
+		"x-trace-id", "abcdef1234567890abcdef1234567890",
+		"x-caller-service", "service-a",
+		"x-initiator-service", "gateway",
+	)
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	_, tc := ExtractOrGenerateTrace(ctx)
+	if tc.CallerService != "service-a" {
+		t.Fatalf("expected CallerService 'service-a', got %q", tc.CallerService)
+	}
+	if tc.InitiatorService != "gateway" {
+		t.Fatalf("expected InitiatorService 'gateway', got %q", tc.InitiatorService)
+	}
+}
+
+func TestInjectOutgoingMetadata_CallerAndInitiator(t *testing.T) {
+	tc := TraceContext{
+		TraceID:          "4bf92f3577b34da6a3ce929d0e0e4736",
+		SpanID:           "00f067aa0ba902b7",
+		CallerService:    "test-service",
+		InitiatorService: "envoy",
+		Sampled:          true,
+	}
+
+	ctx := InjectOutgoingMetadata(context.Background(), tc)
+	md, ok := metadata.FromOutgoingContext(ctx)
+	if !ok {
+		t.Fatal("expected outgoing metadata")
+	}
+
+	if val := firstMD(md, "x-caller-service"); val != "test-service" {
+		t.Fatalf("expected x-caller-service 'test-service', got %q", val)
+	}
+	if val := firstMD(md, "x-initiator-service"); val != "envoy" {
+		t.Fatalf("expected x-initiator-service 'envoy', got %q", val)
+	}
+}

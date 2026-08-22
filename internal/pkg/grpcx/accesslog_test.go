@@ -7,11 +7,14 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -286,6 +289,30 @@ func TestWithTraceLogger(t *testing.T) {
 	}
 	if !strings.Contains(out, "0000111122223333") {
 		t.Fatalf("expected parent_span_id in log, got: %s", out)
+	}
+}
+
+func TestLogClientRPC_ErrorLevels(t *testing.T) {
+	var buf bytes.Buffer
+	z := zerolog.New(&buf)
+	logger := zlog.Logger{Logger: z}
+
+	tc := NewTraceContext()
+
+	// 1. Remote server error (Internal) should be logged as warn to avoid cascading errors
+	logClientRPC(context.Background(), logger, tc, "/service.A/Method", "unary", "target:9091", time.Now(), status.Error(codes.Internal, "remote internal error"))
+	out := buf.String()
+	if !strings.Contains(out, `"level":"warn"`) {
+		t.Fatalf("expected level:warn for remote Internal error, got: %s", out)
+	}
+
+	buf.Reset()
+
+	// 2. Transport unavailable error should be logged as error
+	logClientRPC(context.Background(), logger, tc, "/service.A/Method", "unary", "target:9091", time.Now(), status.Error(codes.Unavailable, "transport unavailable"))
+	out2 := buf.String()
+	if !strings.Contains(out2, `"level":"error"`) {
+		t.Fatalf("expected level:error for Unavailable error, got: %s", out2)
 	}
 }
 

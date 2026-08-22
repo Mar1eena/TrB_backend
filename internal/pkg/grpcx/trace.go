@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"strings"
 
 	"google.golang.org/grpc/metadata"
@@ -14,10 +15,37 @@ type traceContextKey struct{}
 
 // TraceContext содержит данные распределённой трассировки в соответствии со стандартом W3C TraceContext.
 type TraceContext struct {
-	TraceID      string
-	SpanID       string
-	ParentSpanID string
-	Sampled      bool
+	TraceID          string
+	SpanID           string
+	ParentSpanID     string
+	CallerService    string
+	InitiatorService string
+	Sampled          bool
+}
+
+// currentServiceName возвращает имя текущего сервиса из переменных окружения.
+func currentServiceName() string {
+	if svc := strings.TrimSpace(firstEnv("SERVICE_NAME", "OTEL_SERVICE_NAME")); svc != "" && svc != "my-go-service" {
+		return svc
+	}
+	return ""
+}
+
+func firstEnv(keys ...string) string {
+	for _, k := range keys {
+		if val := strings.TrimSpace(firstEnvVal(k)); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+func firstEnvVal(k string) string {
+	return strings.TrimSpace(getenv(k))
+}
+
+var getenv = func(k string) string {
+	return os.Getenv(k)
 }
 
 // IsValid возвращает true, если контекст содержит непустые TraceID и SpanID.
@@ -43,11 +71,18 @@ func (tc TraceContext) NewChildSpan() TraceContext {
 	if !tc.IsValid() {
 		return NewTraceContext()
 	}
+	svc := currentServiceName()
+	initiator := tc.InitiatorService
+	if initiator == "" {
+		initiator = svc
+	}
 	return TraceContext{
-		TraceID:      tc.TraceID,
-		SpanID:       GenerateSpanID(),
-		ParentSpanID: tc.SpanID,
-		Sampled:      tc.Sampled,
+		TraceID:          tc.TraceID,
+		SpanID:           GenerateSpanID(),
+		ParentSpanID:     tc.SpanID,
+		CallerService:    svc,
+		InitiatorService: initiator,
+		Sampled:          tc.Sampled,
 	}
 }
 
@@ -71,10 +106,12 @@ func GenerateSpanID() string {
 
 // NewTraceContext создаёт новый корневой контекст трассировки.
 func NewTraceContext() TraceContext {
+	svc := currentServiceName()
 	return TraceContext{
-		TraceID: GenerateTraceID(),
-		SpanID:  GenerateSpanID(),
-		Sampled: true,
+		TraceID:          GenerateTraceID(),
+		SpanID:           GenerateSpanID(),
+		InitiatorService: svc,
+		Sampled:          true,
 	}
 }
 
@@ -133,13 +170,27 @@ func ExtractOrGenerateTrace(ctx context.Context) (context.Context, TraceContext)
 
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
+		callerService := firstMD(md, "x-caller-service")
+		if callerService == "" {
+			callerService = firstMD(md, "x-app-name")
+		}
+		if callerService == "" {
+			callerService = firstMD(md, "user-agent")
+		}
+		initiatorService := firstMD(md, "x-initiator-service")
+		if initiatorService == "" {
+			initiatorService = callerService
+		}
+
 		if tp := firstMD(md, "traceparent"); tp != "" {
 			if parentTC, ok := ParseTraceparent(tp); ok {
 				tc := TraceContext{
-					TraceID:      parentTC.TraceID,
-					SpanID:       GenerateSpanID(),
-					ParentSpanID: parentTC.SpanID,
-					Sampled:      parentTC.Sampled,
+					TraceID:          parentTC.TraceID,
+					SpanID:           GenerateSpanID(),
+					ParentSpanID:     parentTC.SpanID,
+					CallerService:    callerService,
+					InitiatorService: initiatorService,
+					Sampled:          parentTC.Sampled,
 				}
 				return ContextWithTrace(ctx, tc), tc
 			}
@@ -164,10 +215,12 @@ func ExtractOrGenerateTrace(ctx context.Context) (context.Context, TraceContext)
 				parentSpanID = firstMD(md, "x-parent-span-id")
 			}
 			tc := TraceContext{
-				TraceID:      traceID,
-				SpanID:       GenerateSpanID(),
-				ParentSpanID: parentSpanID,
-				Sampled:      true,
+				TraceID:          traceID,
+				SpanID:           GenerateSpanID(),
+				ParentSpanID:     parentSpanID,
+				CallerService:    callerService,
+				InitiatorService: initiatorService,
+				Sampled:          true,
 			}
 			return ContextWithTrace(ctx, tc), tc
 		}
@@ -190,6 +243,23 @@ func InjectOutgoingMetadata(ctx context.Context, tc TraceContext) context.Contex
 	}
 	if tc.ParentSpanID != "" {
 		pairs = append(pairs, "x-parent-span-id", tc.ParentSpanID)
+	}
+
+	svc := currentServiceName()
+	caller := tc.CallerService
+	if caller == "" {
+		caller = svc
+	}
+	if caller != "" {
+		pairs = append(pairs, "x-caller-service", caller)
+	}
+
+	initiator := tc.InitiatorService
+	if initiator == "" {
+		initiator = svc
+	}
+	if initiator != "" {
+		pairs = append(pairs, "x-initiator-service", initiator)
 	}
 
 	return metadata.AppendToOutgoingContext(ctx, pairs...)

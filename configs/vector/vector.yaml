@@ -40,6 +40,7 @@ transforms:
       body = raw_msg
       trace_id = ""
       span_id = ""
+      flags = 0
       log_attrs = [
         {"key": "log.iostream", "value": {"stringValue": stream}},
         {"key": "com.docker.compose.service", "value": {"stringValue": service}}
@@ -53,6 +54,9 @@ transforms:
         err = string(j.error) ?? string(j.e) ?? ""
         trace_id = string(j.trace_id) ?? string(j.traceId) ?? ""
         span_id = string(j.span_id) ?? string(j.spanId) ?? ""
+        if trace_id != "" {
+          flags = 1
+        }
         if err != "" {
           log_attrs = push(log_attrs, {"key": "error", "value": {"stringValue": err}})
         }
@@ -150,6 +154,30 @@ transforms:
 
       ts_ns = to_unix_timestamp!(.timestamp, unit: "nanoseconds")
 
+      # OTLP protobuf expects trace_id = 16 bytes and span_id = 8 bytes.
+      # A 32/16-char hex string sent as UTF-8 is the wrong length; ClickStack
+      # then returns HTTP 400 and Vector drops the whole batch.
+      log_record = {
+        "timeUnixNano": ts_ns,
+        "severityNumber": severity_number,
+        "severityText": severity_text,
+        "body": {"stringValue": body},
+        "attributes": log_attrs
+      }
+      if match(trace_id, r'^[0-9a-fA-F]{32}$') {
+        tid, tid_err = decode_base16(trace_id)
+        if tid_err == null {
+          log_record.traceId = tid
+          log_record.flags = flags
+        }
+      }
+      if match(span_id, r'^[0-9a-fA-F]{16}$') {
+        sid, sid_err = decode_base16(span_id)
+        if sid_err == null {
+          log_record.spanId = sid
+        }
+      }
+
       . = {
         "resourceLogs": [{
           "resource": {
@@ -166,15 +194,7 @@ transforms:
               "name": "vector.docker_logs",
               "version": "1.0.0"
             },
-            "logRecords": [{
-              "timeUnixNano": ts_ns,
-              "severityNumber": severity_number,
-              "severityText": severity_text,
-              "body": {"stringValue": body},
-              "attributes": log_attrs,
-              "traceId": trace_id,
-              "spanId": span_id
-            }]
+            "logRecords": [log_record]
           }]
         }]
       }

@@ -32,7 +32,11 @@ func New() Logger {
 	zerolog.MessageFieldName = "message"
 	zerolog.ErrorFieldName = "error"
 	ctx := zerolog.New(os.Stdout).With().Timestamp()
-	if svc := os.Getenv("OTEL_SERVICE_NAME"); svc != "" {
+	svc := os.Getenv("SERVICE_NAME")
+	if svc == "" {
+		svc = os.Getenv("OTEL_SERVICE_NAME")
+	}
+	if svc != "" && svc != "my-go-service" {
 		ctx = ctx.Str("service", svc)
 	}
 	return Logger{Logger: ctx.Logger()}
