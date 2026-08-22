@@ -5,11 +5,11 @@ import (
 
 	"github.com/Mar1eena/TrB_V3/internal/pkg/env"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
-	dbapi "github.com/Mar1eena/trb_proto/gen/go/api/db_api"
+	pgapi "github.com/Mar1eena/trb_proto/gen/go/postgresql"
 	"google.golang.org/grpc"
 )
 
-// Dial opens an insecure gRPC connection to the data (DbApi) service.
+// Dial opens an insecure gRPC connection to the data (PostgreSQL) service.
 func Dial(addr string) (*grpc.ClientConn, error) {
 	return grpcx.DialInsecure(addr)
 }
@@ -23,7 +23,7 @@ func DialFromEnv() (*grpc.ClientConn, error) {
 	return Dial(addr)
 }
 
-// New returns a typed DbApi client.
-func New(conn grpc.ClientConnInterface) dbapi.DbApiClient {
-	return dbapi.NewDbApiClient(conn)
+// New returns a typed PostgreSQL client.
+func New(conn grpc.ClientConnInterface) pgapi.PostgreSQLClient {
+	return pgapi.NewPostgreSQLClient(conn)
 }

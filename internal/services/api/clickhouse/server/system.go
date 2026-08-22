@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	chmgr "github.com/Mar1eena/trb_proto/gen/go/api/clickhouse"
+	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

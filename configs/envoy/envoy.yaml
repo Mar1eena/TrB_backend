@@ -90,7 +90,7 @@ static_resources:
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
-                            prefix: /trb.nats.manager.public.contract.v1.NatsJetStreamManager
+                            prefix: /trb.nats.v1.Nats_Admin
                           route:
                             cluster: nats
                             timeout: 60s
@@ -104,14 +104,7 @@ static_resources:
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
-                            prefix: /trb.db.api.public.contract.v1.DbApi
-                          route:
-                            cluster: data
-                            timeout: 60s
-                            request_mirror_policies:
-                              cluster: debuger_grpc
-                        - match:
-                            prefix: /v1/instruments
+                            prefix: /trb.postgresql.v1.PostgreSQL
                           route:
                             cluster: data
                             timeout: 60s
@@ -125,14 +118,7 @@ static_resources:
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
-                            prefix: /v1/historic-candles
-                          route:
-                            cluster: data
-                            timeout: 60s
-                            request_mirror_policies:
-                              cluster: debuger_grpc
-                        - match:
-                            prefix: /trb.test.public.contract.v1.Test
+                            prefix: /trb.test.v1.Test
                           route:
                             cluster: test
                             timeout: 120s
@@ -146,7 +132,14 @@ static_resources:
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
-                            prefix: /trb.clickhouse.manager.public.contract.v1.ClickHouseManager
+                            prefix: /trb.clickhouse.v1.ClickHouse_Admin
+                          route:
+                            cluster: clickhouse
+                            timeout: 60s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
+                            prefix: /trb.clickhouse.v1.ClickHouse
                           route:
                             cluster: clickhouse
                             timeout: 60s
@@ -154,6 +147,20 @@ static_resources:
                               cluster: debuger_grpc
                         - match:
                             prefix: /v1/clickhouse
+                          route:
+                            cluster: clickhouse
+                            timeout: 60s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
+                            prefix: /v1/instruments
+                          route:
+                            cluster: clickhouse
+                            timeout: 60s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
+                            prefix: /v1/historic-candles
                           route:
                             cluster: clickhouse
                             timeout: 60s
@@ -183,10 +190,11 @@ static_resources:
                         - tinkoff.public.invest.api.contract.v1.SandboxService
                         - tinkoff.public.invest.api.contract.v1.SignalService
                         - tinkoff.public.invest.api.contract.v1.StopOrdersService
-                        - trb.nats.manager.public.contract.v1.NatsJetStreamManager
-                        - trb.db.api.public.contract.v1.DbApi
-                        - trb.test.public.contract.v1.Test
-                        - trb.clickhouse.manager.public.contract.v1.ClickHouseManager
+                        - trb.nats.v1.Nats_Admin
+                        - trb.postgresql.v1.PostgreSQL
+                        - trb.test.v1.Test
+                        - trb.clickhouse.v1.ClickHouse_Admin
+                        - trb.clickhouse.v1.ClickHouse
                       print_options:
                         add_whitespace: true
                         always_print_primitive_fields: true

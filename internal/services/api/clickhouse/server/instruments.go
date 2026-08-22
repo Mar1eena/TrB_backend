@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
-	dbapi "github.com/Mar1eena/trb_proto/gen/go/api/db_api"
-	tinvest "github.com/Mar1eena/trb_proto/gen/go/tinvest"
+	tinvest "github.com/Mar1eena/trb_proto/gen/go/api/tinvest"
+	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -66,9 +66,9 @@ type InstrumentRow struct {
 	Version               time.Time `ch:"version"`
 }
 
-func (s *Server) ListInstruments(ctx context.Context, req *dbapi.ListInstrumentsRequest) (*dbapi.ListInstrumentsResponse, error) {
+func (s *Server) ListInstruments(ctx context.Context, req *chmgr.ListInstrumentsRequest) (*chmgr.ListInstrumentsResponse, error) {
 	if req == nil {
-		req = &dbapi.ListInstrumentsRequest{}
+		req = &chmgr.ListInstrumentsRequest{}
 	}
 	q, limit, offset := filterFrom(req.GetFilter(), 2000, 20000)
 	lite := req.GetLite()
@@ -92,20 +92,20 @@ LIMIT $%d OFFSET $%d`, clickhouse.ShtSelectColumns, clause, next, next+1)
 	if !lite {
 		counts = s.versionCounts(ctx)
 	}
-	items := make([]*dbapi.InstrumentListItem, 0, len(rows))
+	items := make([]*chmgr.InstrumentListItem, 0, len(rows))
 	for i := range rows {
 		count := counts[rows[i].UID]
 		if count == 0 {
 			count = 1
 		}
-		items = append(items, &dbapi.InstrumentListItem{
+		items = append(items, &chmgr.InstrumentListItem{
 			Share:        InstrumentFromRow(&rows[i], lite),
 			Version:      PbTime(rows[i].Version),
 			VersionCount: count,
 		})
 	}
 	s.log.Info().Int("count", len(items)).Bool("lite", lite).Str("q", q).Msg("инструменты загружены")
-	return &dbapi.ListInstrumentsResponse{Items: items}, nil
+	return &chmgr.ListInstrumentsResponse{Items: items}, nil
 }
 
 type versionCountRow struct {
@@ -197,40 +197,5 @@ func InstrumentFromRow(row *InstrumentRow, lite bool) *tinvest.Share {
 	}
 	out.DlongClient = floatToQuotation(row.DlongClient)
 	out.DshortClient = floatToQuotation(row.DshortClient)
-	return out
-}
-
-type shareMeta struct {
-	Figi   string `ch:"figi"`
-	Ticker string `ch:"ticker"`
-	Name   string `ch:"name"`
-	UID    string `ch:"uid"`
-}
-
-func (s *Server) lookupShares(ctx context.Context, uids []string) map[string]shareMeta {
-	out := make(map[string]shareMeta, len(uids))
-	if len(uids) == 0 {
-		return out
-	}
-	const batchSize = 500
-	for start := 0; start < len(uids); start += batchSize {
-		end := start + batchSize
-		if end > len(uids) {
-			end = len(uids)
-		}
-		batch := uids[start:end]
-		var rows []shareMeta
-		err := s.ch.Select(ctx, &rows, `
-SELECT uid, figi, ticker, name
-FROM TrB.sht FINAL
-WHERE uid IN ($1)`, batch)
-		if err != nil {
-			s.log.Error().Err(err).Int("uids", len(batch)).Msg("не удалось обогатить инструменты из ClickHouse")
-			continue
-		}
-		for _, row := range rows {
-			out[row.UID] = row
-		}
-	}
 	return out
 }

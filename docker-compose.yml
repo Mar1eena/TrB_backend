@@ -29,6 +29,8 @@ x-services-config: &services-config
     - INVEST_API_URL_DOCKER
     - DATA_API_URL
     - DATA_API_URL_DOCKER
+    - CLICKHOUSE_API_URL
+    - CLICKHOUSE_API_URL_DOCKER
     - INTERVAL_UPDATE_HC
     - HCT_NATS_STREAM
     - HCT_NATS_SUBJECT
@@ -129,7 +131,7 @@ services:
         CMD_PATH: ./internal/services/test/cmd/main.go
     depends_on:
       - invest
-      - data
+      - clickhouse
     deploy:
       resources:
         limits:

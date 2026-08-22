@@ -5,14 +5,14 @@ import (
 	"strings"
 
 	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
-	dbapi "github.com/Mar1eena/trb_proto/gen/go/api/db_api"
+	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func (s *Server) ListInstrumentVersions(ctx context.Context, req *dbapi.ListInstrumentVersionsRequest) (*dbapi.ListInstrumentVersionsResponse, error) {
+func (s *Server) ListInstrumentVersions(ctx context.Context, req *chmgr.ListInstrumentVersionsRequest) (*chmgr.ListInstrumentVersionsResponse, error) {
 	if req == nil {
-		req = &dbapi.ListInstrumentVersionsRequest{}
+		req = &chmgr.ListInstrumentVersionsRequest{}
 	}
 	uid := strings.TrimSpace(req.GetUid())
 	if uid == "" {
@@ -32,7 +32,7 @@ ORDER BY version DESC`
 		return nil, status.Errorf(codes.Internal, "не удалось загрузить версии: %v", err)
 	}
 
-	items := make([]*dbapi.InstrumentVersion, 0, len(rows))
+	items := make([]*chmgr.InstrumentVersion, 0, len(rows))
 	seen := make(map[int64]struct{}, len(rows))
 	for i := range rows {
 		key := rows[i].Version.UTC().UnixMilli()
@@ -40,12 +40,12 @@ ORDER BY version DESC`
 			continue
 		}
 		seen[key] = struct{}{}
-		items = append(items, &dbapi.InstrumentVersion{
+		items = append(items, &chmgr.InstrumentVersion{
 			Share:   InstrumentFromRow(&rows[i], false),
 			Version: PbTime(rows[i].Version),
 		})
 	}
 
 	s.log.Info().Str("uid", uid).Int("count", len(items)).Msg("версии инструмента загружены")
-	return &dbapi.ListInstrumentVersionsResponse{Items: items}, nil
+	return &chmgr.ListInstrumentVersionsResponse{Items: items}, nil
 }

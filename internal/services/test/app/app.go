@@ -12,7 +12,7 @@ import (
 	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
-	dataclient "github.com/Mar1eena/TrB_V3/internal/services/api/data/client"
+	chclient "github.com/Mar1eena/TrB_V3/internal/services/api/clickhouse/client"
 	investclient "github.com/Mar1eena/TrB_V3/internal/services/api/invest/client"
 	"github.com/Mar1eena/TrB_V3/internal/services/test/server"
 	"golang.org/x/sync/errgroup"
@@ -29,7 +29,7 @@ func App() {
 
 	var (
 		investConn *grpc.ClientConn
-		dataConn   *grpc.ClientConn
+		chConn     *grpc.ClientConn
 	)
 	defer func() {
 		if investConn != nil {
@@ -37,9 +37,9 @@ func App() {
 				l.Error().Err(err).Msg("ошибка закрытия соединения с invest")
 			}
 		}
-		if dataConn != nil {
-			if err := dataConn.Close(); err != nil {
-				l.Error().Err(err).Msg("ошибка закрытия соединения с data")
+		if chConn != nil {
+			if err := chConn.Close(); err != nil {
+				l.Error().Err(err).Msg("ошибка закрытия соединения с clickhouse")
 			}
 		}
 	}()
@@ -48,15 +48,15 @@ func App() {
 	investSlot := wait.Go(g, "invest", func(ctx context.Context) (*grpc.ClientConn, error) {
 		return investclient.DialFromEnv()
 	})
-	dataSlot := wait.Go(g, "data", func(ctx context.Context) (*grpc.ClientConn, error) {
-		return dataclient.DialFromEnv()
+	chSlot := wait.Go(g, "clickhouse", func(ctx context.Context) (*grpc.ClientConn, error) {
+		return chclient.DialFromEnv()
 	})
 	if err := g.Wait(); err != nil {
 		l.Info().Err(err).Msg("сервис остановлен до подключения к зависимостям")
 		return
 	}
 	investConn = investSlot.Get()
-	dataConn = dataSlot.Get()
+	chConn = chSlot.Get()
 
 	port := env.Get("PORT")
 	if port == "" {
@@ -71,7 +71,7 @@ func App() {
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
 	service := server.New(
 		investclient.NewInstruments(investConn),
-		dataclient.New(dataConn),
+		chclient.New(chConn),
 		l,
 	)
 	server.Register(gs, service)

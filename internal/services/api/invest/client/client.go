@@ -5,7 +5,7 @@ import (
 
 	"github.com/Mar1eena/TrB_V3/internal/pkg/env"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
-	tinvest "github.com/Mar1eena/trb_proto/gen/go/tinvest"
+	tinvest "github.com/Mar1eena/trb_proto/gen/go/api/tinvest"
 	"google.golang.org/grpc"
 )
 

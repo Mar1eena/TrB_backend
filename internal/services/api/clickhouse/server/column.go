@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 
-	chmgr "github.com/Mar1eena/trb_proto/gen/go/api/clickhouse"
+	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
 )
 
 func (s *Server) AddColumn(ctx context.Context, req *chmgr.AddColumnRequest) (*chmgr.Status, error) {

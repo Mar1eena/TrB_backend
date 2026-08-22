@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 
-	chmgr "github.com/Mar1eena/trb_proto/gen/go/api/clickhouse"
+	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
 )
 
 func (s *Server) exec(ctx context.Context, sql string) (*chmgr.Status, error) {

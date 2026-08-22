@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	dbapi "github.com/Mar1eena/trb_proto/gen/go/api/db_api"
+	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -21,9 +21,9 @@ type lastDownloadRow struct {
 	HasDownload uint8     `ch:"has_download"`
 }
 
-func (s *Server) ListLastDownloads(ctx context.Context, req *dbapi.ListLastDownloadsRequest) (*dbapi.ListLastDownloadsResponse, error) {
+func (s *Server) ListLastDownloads(ctx context.Context, req *chmgr.ListLastDownloadsRequest) (*chmgr.ListLastDownloadsResponse, error) {
 	if req == nil {
-		req = &dbapi.ListLastDownloadsRequest{}
+		req = &chmgr.ListLastDownloadsRequest{}
 	}
 	q, limit, offset := filterFrom(req.GetFilter(), 500, 5000)
 	clause, searchArgs, next := SearchClause(q, "", 1)
@@ -62,10 +62,10 @@ LIMIT $%d OFFSET $%d`, clause, next, next+1)
 		return nil, status.Errorf(codes.Internal, "не удалось загрузить историю загрузок: %v", err)
 	}
 
-	items := make([]*dbapi.LastDownload, 0, len(rows))
+	items := make([]*chmgr.LastDownload, 0, len(rows))
 	for i := range rows {
 		row := &rows[i]
-		items = append(items, &dbapi.LastDownload{
+		items = append(items, &chmgr.LastDownload{
 			Uid:         row.UID,
 			Figi:        row.Figi,
 			Ticker:      row.Ticker,
@@ -77,5 +77,5 @@ LIMIT $%d OFFSET $%d`, clause, next, next+1)
 		})
 	}
 	s.log.Info().Int("count", len(items)).Str("q", q).Msg("история загрузок получена")
-	return &dbapi.ListLastDownloadsResponse{Items: items}, nil
+	return &chmgr.ListLastDownloadsResponse{Items: items}, nil
 }

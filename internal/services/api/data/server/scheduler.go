@@ -4,19 +4,19 @@ import (
 	"context"
 
 	"github.com/Mar1eena/TrB_V3/internal/pkg/db/postgres"
-	dbapi "github.com/Mar1eena/trb_proto/gen/go/api/db_api"
+	pgapi "github.com/Mar1eena/trb_proto/gen/go/postgresql"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func ValidateSync(instruments []*dbapi.SchedulerTargetInstrument, allowEmpty bool) error {
+func ValidateSync(instruments []*pgapi.SchedulerTargetInstrument, allowEmpty bool) error {
 	if len(instruments) == 0 && !allowEmpty {
 		return status.Error(codes.InvalidArgument, "пустой список сотрёт все цели; передайте allow_empty")
 	}
 	return nil
 }
 
-func (s *Server) ListSchedulerTargets(ctx context.Context, _ *dbapi.ListSchedulerTargetsRequest) (*dbapi.ListSchedulerTargetsResponse, error) {
+func (s *Server) ListSchedulerTargets(ctx context.Context, _ *pgapi.ListSchedulerTargetsRequest) (*pgapi.ListSchedulerTargetsResponse, error) {
 	targets, err := postgres.ListTargets(ctx, s.pg)
 	if err != nil {
 		s.log.Error().Err(err).Msg("не удалось загрузить цели scheduler")
@@ -26,9 +26,9 @@ func (s *Server) ListSchedulerTargets(ctx context.Context, _ *dbapi.ListSchedule
 	uids := uniqueUIDs(targets)
 	meta := s.lookupShares(ctx, uids)
 
-	items := make([]*dbapi.SchedulerTarget, 0, len(targets))
+	items := make([]*pgapi.SchedulerTarget, 0, len(targets))
 	for _, t := range targets {
-		item := &dbapi.SchedulerTarget{
+		item := &pgapi.SchedulerTarget{
 			Uid:       t.UID,
 			Interval:  t.Interval,
 			Enabled:   t.Enabled,
@@ -43,12 +43,12 @@ func (s *Server) ListSchedulerTargets(ctx context.Context, _ *dbapi.ListSchedule
 		items = append(items, item)
 	}
 	s.log.Info().Int("count", len(items)).Msg("цели scheduler загружены")
-	return &dbapi.ListSchedulerTargetsResponse{Items: items}, nil
+	return &pgapi.ListSchedulerTargetsResponse{Items: items}, nil
 }
 
-func (s *Server) SyncSchedulerTargets(ctx context.Context, req *dbapi.SyncSchedulerTargetsRequest) (*dbapi.SyncSchedulerTargetsResponse, error) {
+func (s *Server) SyncSchedulerTargets(ctx context.Context, req *pgapi.SyncSchedulerTargetsRequest) (*pgapi.SyncSchedulerTargetsResponse, error) {
 	if req == nil {
-		req = &dbapi.SyncSchedulerTargetsRequest{}
+		req = &pgapi.SyncSchedulerTargetsRequest{}
 	}
 	if err := ValidateSync(req.GetInstruments(), req.GetAllowEmpty()); err != nil {
 		return nil, err
@@ -66,7 +66,7 @@ func (s *Server) SyncSchedulerTargets(ctx context.Context, req *dbapi.SyncSchedu
 		return nil, status.Errorf(codes.Internal, "не удалось сохранить цели scheduler: %v", err)
 	}
 	s.log.Info().Int("instruments", len(payload)).Msg("цели scheduler сохранены")
-	return &dbapi.SyncSchedulerTargetsResponse{Count: int32(len(payload))}, nil
+	return &pgapi.SyncSchedulerTargetsResponse{Count: int32(len(payload))}, nil
 }
 
 func uniqueUIDs(targets []postgres.SchedulerTarget) []string {
@@ -81,6 +81,41 @@ func uniqueUIDs(targets []postgres.SchedulerTarget) []string {
 		}
 		seen[t.UID] = struct{}{}
 		out = append(out, t.UID)
+	}
+	return out
+}
+
+type shareMeta struct {
+	Figi   string `ch:"figi"`
+	Ticker string `ch:"ticker"`
+	Name   string `ch:"name"`
+	UID    string `ch:"uid"`
+}
+
+func (s *Server) lookupShares(ctx context.Context, uids []string) map[string]shareMeta {
+	out := make(map[string]shareMeta, len(uids))
+	if len(uids) == 0 {
+		return out
+	}
+	const batchSize = 500
+	for start := 0; start < len(uids); start += batchSize {
+		end := start + batchSize
+		if end > len(uids) {
+			end = len(uids)
+		}
+		batch := uids[start:end]
+		var rows []shareMeta
+		err := s.ch.Select(ctx, &rows, `
+SELECT uid, figi, ticker, name
+FROM TrB.sht FINAL
+WHERE uid IN ($1)`, batch)
+		if err != nil {
+			s.log.Error().Err(err).Int("uids", len(batch)).Msg("не удалось обогатить инструменты из ClickHouse")
+			continue
+		}
+		for _, row := range rows {
+			out[row.UID] = row
+		}
 	}
 	return out
 }

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	nats_admin "github.com/Mar1eena/trb_proto/gen/go/api/nats"
+	nats_admin "github.com/Mar1eena/trb_proto/gen/go/nats"
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

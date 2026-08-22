@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	chmgr "github.com/Mar1eena/trb_proto/gen/go/api/clickhouse"
+	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
 )
 
 // Codecs are not exposed via a system.* catalog in ClickHouse; keep a curated server-side list.

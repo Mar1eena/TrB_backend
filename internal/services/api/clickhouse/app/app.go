@@ -44,6 +44,10 @@ func App() {
 		return
 	}
 
+	if err := clickhouse.EnsureShtSchema(ctx, ch); err != nil {
+		l.Fatal().Err(err).Msg("не удалось подготовить схему TrB.sht")
+	}
+
 	port := env.Get("PORT")
 	if port == "" {
 		port = "9091"

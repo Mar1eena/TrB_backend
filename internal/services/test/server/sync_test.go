@@ -6,9 +6,9 @@ import (
 
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/services/test/server"
-	dbapi "github.com/Mar1eena/trb_proto/gen/go/api/db_api"
-	testpb "github.com/Mar1eena/trb_proto/gen/go/api/test"
-	tinvest "github.com/Mar1eena/trb_proto/gen/go/tinvest"
+	tinvest "github.com/Mar1eena/trb_proto/gen/go/api/tinvest"
+	chpb "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
+	testpb "github.com/Mar1eena/trb_proto/gen/go/test"
 	"google.golang.org/grpc"
 )
 
@@ -25,13 +25,13 @@ func (m *mockInvestClient) Shares(ctx context.Context, in *tinvest.InstrumentsRe
 	return m.sharesResp, nil
 }
 
-type mockDbApiClient struct {
-	dbapi.DbApiClient
-	upsertResp *dbapi.UpsertInstrumentsResponse
+type mockClickHouseClient struct {
+	chpb.ClickHouseClient
+	upsertResp *chpb.UpsertInstrumentsResponse
 	upsertErr  error
 }
 
-func (m *mockDbApiClient) UpsertInstruments(ctx context.Context, in *tinvest.SharesResponse, opts ...grpc.CallOption) (*dbapi.UpsertInstrumentsResponse, error) {
+func (m *mockClickHouseClient) UpsertInstruments(ctx context.Context, in *tinvest.SharesResponse, opts ...grpc.CallOption) (*chpb.UpsertInstrumentsResponse, error) {
 	if m.upsertErr != nil {
 		return nil, m.upsertErr
 	}
@@ -46,15 +46,15 @@ func TestSyncInstrumentsSuccess(t *testing.T) {
 			},
 		},
 	}
-	data := &mockDbApiClient{
-		upsertResp: &dbapi.UpsertInstrumentsResponse{
+	ch := &mockClickHouseClient{
+		upsertResp: &chpb.UpsertInstrumentsResponse{
 			Fetched:   1,
 			Inserted:  1,
 			Updated:   0,
 			Unchanged: 0,
 		},
 	}
-	srv := server.New(invest, data, zlog.New())
+	srv := server.New(invest, ch, zlog.New())
 
 	resp, err := srv.SyncInstruments(context.Background(), &testpb.SyncInstrumentsRequest{})
 	if err != nil {

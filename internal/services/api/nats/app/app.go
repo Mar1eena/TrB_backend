@@ -52,7 +52,7 @@ func App() {
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
 	service := server.NewNatsService(natsClient)
-	server.RegisterNatsJetStreamManagerServer(gs, service)
+	server.RegisterNats_AdminServer(gs, service)
 
 	g, gCtx := errgroup.WithContext(ctx)
 

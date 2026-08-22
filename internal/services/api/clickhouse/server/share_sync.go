@@ -8,14 +8,14 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
-	dbapi "github.com/Mar1eena/trb_proto/gen/go/api/db_api"
-	tinvest "github.com/Mar1eena/trb_proto/gen/go/tinvest"
+	tinvest "github.com/Mar1eena/trb_proto/gen/go/api/tinvest"
+	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesResponse) (*dbapi.UpsertInstrumentsResponse, error) {
+func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesResponse) (*chmgr.UpsertInstrumentsResponse, error) {
 	if req == nil {
 		req = &tinvest.SharesResponse{}
 	}
@@ -63,7 +63,7 @@ func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesRespo
 		Int32("updated", updated).
 		Int32("unchanged", unchanged).
 		Msg("справочник инструментов обновлён")
-	return &dbapi.UpsertInstrumentsResponse{
+	return &chmgr.UpsertInstrumentsResponse{
 		Fetched:   int32(len(incoming)),
 		Inserted:  inserted,
 		Updated:   updated,

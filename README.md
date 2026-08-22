@@ -313,16 +313,14 @@ go run ./internal/services/gateway/cmd/
 
 ### `data`
 
-gRPC API веб-клиента к базам: ClickHouse (`TrB.sht`, `hct_last_download`) и Postgres (цели scheduler). Браузер ходит через Envoy (gRPC-Web / JSON), как к `nats`. Произвольный SQL с клиента не принимается.
+gRPC API веб-клиента к PostgreSQL: цели планировщика. Браузер ходит через Envoy (gRPC-Web / JSON), как к `nats`. Произвольный SQL с клиента не принимается. Справочник акций и история догрузок — сервис `clickhouse`.
 
-Контракт: `trb.db.api.public.contract.v1.DbApi` в [TrB_proto](https://github.com/Mar1eena/TrB_proto) (`services/api/db_api/db_api.proto`).
+Контракт: `trb.postgresql.v1.PostgreSQL` в [TrB_proto](https://github.com/Mar1eena/TrB_proto) (`services/postgresql/postgresql.proto`).
 
 | RPC | Назначение |
 |---|---|
-| `ListInstruments` | Справочник акций |
 | `ListSchedulerTargets` | Цели догрузки свечей |
 | `SyncSchedulerTargets` | Замена набора целей |
-| `ListLastDownloads` | История догрузок |
 
 Новый экран: добавить RPC в proto, `make gene` в TrB_proto, опубликовать модуль, обновить `github.com/Mar1eena/trb_proto` в `go.mod`, обработчик в `internal/services/api/data/server`. Envoy уже проксирует весь префикс сервиса.
 
@@ -331,22 +329,29 @@ make data
 go run ./internal/services/api/data/cmd/
 ```
 
-JSON (через Envoy :8081): `GET /v1/instruments`, `GET /v1/scheduler/targets`, `PUT /v1/scheduler/targets`, `GET /v1/historic-candles/last-downloads`.
+JSON (через Envoy :8081): `GET /v1/scheduler/targets`, `PUT /v1/scheduler/targets`.
 
 ---
 
 ### `clickhouse`
 
-gRPC API управления схемой ClickHouse (DDL): базы, таблицы, колонки. Произвольный SQL с клиента не принимается — идентификаторы и выражения проверяются на сервере. Запросы данных — `data` / native `clickhouse.grpc.ClickHouse`.
+gRPC API ClickHouse: админка схемы (DDL) и бизнес-логика (`TrB.sht`, `hct_last_download`). Произвольный SQL с клиента в админке не принимается — идентификаторы и выражения проверяются на сервере. Native протокол ClickHouse — `clickhouse.grpc.ClickHouse`.
 
-Контракт: `trb.clickhouse.manager.public.contract.v1.ClickHouseManager` в [TrB_proto](https://github.com/Mar1eena/TrB_proto) (`services/api/clickhouse/manager.proto`).
+Контракты в [TrB_proto](https://github.com/Mar1eena/TrB_proto): `trb.clickhouse.v1.ClickHouse_Admin` (`services/clickhouse/admin.proto`) и `trb.clickhouse.v1.ClickHouse` (`services/clickhouse/clickhouse.proto`).
+
+| RPC (`ClickHouse`) | Назначение |
+|---|---|
+| `ListInstruments` | Справочник акций |
+| `ListInstrumentVersions` | История версий инструмента |
+| `UpsertInstruments` | Запись акций в `TrB.sht` |
+| `ListLastDownloads` | История догрузок |
 
 ```bash
 make clickhouse
 go run ./internal/services/api/clickhouse/cmd/
 ```
 
-JSON (через Envoy :8081): `GET /v1/clickhouse/ping`, `GET /v1/clickhouse/info`, `GET /v1/clickhouse/databases`.
+JSON (через Envoy :8081): `GET /v1/clickhouse/ping`, `GET /v1/instruments`, `GET /v1/historic-candles/last-downloads`.
 
 ---
 
@@ -354,8 +359,8 @@ JSON (через Envoy :8081): `GET /v1/clickhouse/ping`, `GET /v1/clickhouse/in
 
 gRPC-сервис управления JetStream: создание/обновление стримов, consumer'ов, списки, purge, удаление сообщений.
 
-- Контракт: `trb_proto` (`NatsJetStreamManager`). Списки стримов/консьюмеров — unary RPC (`StreamList`, `ConsumerList`), не server-streaming.
-- Доступен через Envoy: gRPC `/trb.nats.manager.public.contract.v1.NatsJetStreamManager` и REST `/v1/nats/...`.
+- Контракт: `trb_proto` (`trb.nats.v1.Nats_Admin`). Списки стримов/консьюмеров — unary RPC (`StreamList`, `ConsumerList`), не server-streaming.
+- Доступен через Envoy: gRPC `/trb.nats.v1.Nats_Admin` и REST `/v1/nats/...`.
 
 ```bash
 make nats
@@ -408,12 +413,14 @@ Envoy проксирует gRPC-сервисы и предоставляет JSO
 | Маршрут | Сервис |
 |---|---|
 | `/tinkoff.public.invest.api.contract.v1.*` | invest |
-| `/trb.nats.manager.public.contract.v1.NatsJetStreamManager` | nats (gRPC) |
+| `/trb.nats.v1.Nats_Admin` | nats (gRPC) |
 | `/v1/nats` | nats (JSON REST, grpc-json-transcoder) |
-| `/trb.db.api.public.contract.v1.DbApi` | data (gRPC) |
-| `/v1/instruments`, `/v1/scheduler`, `/v1/historic-candles` | data (JSON REST) |
-| `/trb.clickhouse.manager.public.contract.v1.ClickHouseManager` | clickhouse (gRPC) |
-| `/v1/clickhouse` | clickhouse (JSON REST) |
+| `/trb.postgresql.v1.PostgreSQL` | data (gRPC) |
+| `/v1/scheduler` | data (JSON REST) |
+| `/trb.clickhouse.v1.ClickHouse_Admin` | clickhouse admin (gRPC) |
+| `/trb.clickhouse.v1.ClickHouse` | clickhouse (gRPC) |
+| `/v1/clickhouse`, `/v1/instruments`, `/v1/historic-candles` | clickhouse (JSON REST) |
+| `/trb.test.v1.Test` | test (gRPC) |
 | `/clickhouse.grpc.ClickHouse` | ClickHouse gRPC |
 
 Админка Envoy: `http://localhost:9901`.

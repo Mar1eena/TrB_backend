@@ -55,11 +55,13 @@ INVEST_ENDPOINT = "sandbox-invest-public-api.tinkoff.ru:443"
 INVEST_ACCOUNT_ID = ""
 INVEST_APP_NAME = ""
 
-# gRPC между сервисами (test → invest/data)
+# gRPC между сервисами (test → invest/clickhouse)
 INVEST_API_URL=localhost:9091
 INVEST_API_URL_DOCKER=invest:9091
 DATA_API_URL=localhost:9091
 DATA_API_URL_DOCKER=data:9091
+CLICKHOUSE_API_URL=localhost:9091
+CLICKHOUSE_API_URL_DOCKER=clickhouse:9091
 
 #Historic candle service
 INTERVAL_UPDATE_HC = 30 # интервал обновления свечей в секундах
