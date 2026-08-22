@@ -15,6 +15,8 @@ static_resources:
                 "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                 stat_prefix: ingress_http
                 codec_type: AUTO
+                generate_request_id: true
+                preserve_external_request_id: true
                 access_log:
                   - name: envoy.access_loggers.stdout
                     typed_config:
@@ -35,12 +37,29 @@ static_resources:
                           user_agent: "%REQ(USER-AGENT)%"
                           bytes_sent: "%BYTES_SENT%"
                           bytes_received: "%BYTES_RECEIVED%"
+                          x_request_id: "%REQ(X-REQUEST-ID)%"
+                          traceparent: "%REQ(TRACEPARENT)%"
+                          trace_id: "%REQ(X-TRACE-ID)%"
+                          span_id: "%REQ(X-SPAN-ID)%"
+                          "caller.service": "%REQ(X-CALLER-SERVICE)%"
+                          "initiator.service": "%REQ(X-INITIATOR-SERVICE)%"
+                          "rpc.kind": "http"
                 route_config:
                   name: local_route
                   virtual_hosts:
                     - name: local_service
                       domains:
                         - "*"
+                      typed_per_filter_config:
+                        envoy.filters.http.cors:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+                          allow_origin_string_match:
+                            - prefix: "http://"
+                            - prefix: "https://"
+                          allow_methods: GET, PUT, DELETE, POST, PATCH, OPTIONS
+                          allow_headers: keep-alive,user-agent,cache-control,content-type,content-transfer-encoding,x-accept-content-transfer-encoding,x-accept-response-streaming,x-user-agent,x-grpc-web,grpc-timeout,authorization,x-request-id,traceparent,tracestate,x-trace-id,x-span-id,x-parent-span-id,x-correlation-id,x-caller-service,x-initiator-service,x-app-name
+                          expose_headers: grpc-status,grpc-message,grpc-status-details-bin,x-request-id
+                          max_age: "86400"
                       routes:
                         - match:
                             prefix: /tinkoff.public.invest.api.contract.v1.MarketDataStreamService

@@ -54,6 +54,29 @@ transforms:
         err = string(j.error) ?? string(j.e) ?? ""
         trace_id = string(j.trace_id) ?? string(j.traceId) ?? ""
         span_id = string(j.span_id) ?? string(j.spanId) ?? ""
+        # Envoy access logs use "-" for missing values
+        if trace_id == "-" {
+          trace_id = ""
+        }
+        if span_id == "-" {
+          span_id = ""
+        }
+        if trace_id == "" {
+          tp = string(j.traceparent) ?? ""
+          if match(tp, r'^00-[0-9a-fA-F]{32}-[0-9a-fA-F]{16}-[0-9a-fA-F]{2}$') {
+            tp_parts = split(tp, "-")
+            trace_id = downcase(string(tp_parts[1]) ?? "")
+            if span_id == "" {
+              span_id = downcase(string(tp_parts[2]) ?? "")
+            }
+          }
+        }
+        if trace_id == "" {
+          req_id = replace(string(j.x_request_id) ?? "", "-", "")
+          if match(req_id, r'^[0-9a-fA-F]{32}$') {
+            trace_id = downcase(req_id)
+          }
+        }
         if trace_id != "" {
           flags = 1
         }
@@ -98,6 +121,26 @@ transforms:
           severity_text = "FATAL"
           severity_number = 21
         }
+      } else if match(raw_msg, r'\[critical\]') {
+        # Envoy: [ts][thread][level][category] — before generic \btrace\b
+        # which also matches TRACE inside X-TRACE-ID.
+        severity_text = "ERROR"
+        severity_number = 17
+      } else if match(raw_msg, r'\[error\]') {
+        severity_text = "ERROR"
+        severity_number = 17
+      } else if match(raw_msg, r'\[warning\]') {
+        severity_text = "WARN"
+        severity_number = 13
+      } else if match(raw_msg, r'\[info\]') {
+        severity_text = "INFO"
+        severity_number = 9
+      } else if match(raw_msg, r'\[debug\]') {
+        severity_text = "DEBUG"
+        severity_number = 5
+      } else if match(raw_msg, r'\[trace\]') {
+        severity_text = "TRACE"
+        severity_number = 1
       } else if match(raw_msg, r'\[FTL\]') {
         severity_text = "FATAL"
         severity_number = 21
