@@ -13,7 +13,11 @@ func Connect(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres dsn: %w", err)
 	}
-	poolCfg.MaxConns = 8
+	if cfg.MaxConns > 0 {
+		poolCfg.MaxConns = cfg.MaxConns
+	} else {
+		poolCfg.MaxConns = 8
+	}
 	poolCfg.MinConns = 1
 	poolCfg.MaxConnLifetime = time.Hour
 

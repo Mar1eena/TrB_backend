@@ -1,4 +1,4 @@
-package data_test
+package postgre_test
 
 import (
 	. "github.com/Mar1eena/TrB_V3/internal/services/postgre/pkg"

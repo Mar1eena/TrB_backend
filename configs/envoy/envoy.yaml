@@ -104,7 +104,21 @@ static_resources:
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
+                            prefix: /trb.postgresql.v1.PostgreSQL_Admin
+                          route:
+                            cluster: postgre
+                            timeout: 60s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
                             prefix: /trb.postgresql.v1.PostgreSQL
+                          route:
+                            cluster: postgre
+                            timeout: 60s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
+                            prefix: /v1/postgresql
                           route:
                             cluster: postgre
                             timeout: 60s
@@ -191,6 +205,7 @@ static_resources:
                         - tinkoff.public.invest.api.contract.v1.SignalService
                         - tinkoff.public.invest.api.contract.v1.StopOrdersService
                         - trb.nats.v1.Nats_Admin
+                        - trb.postgresql.v1.PostgreSQL_Admin
                         - trb.postgresql.v1.PostgreSQL
                         - trb.test.v1.Test
                         - trb.clickhouse.v1.ClickHouse_Admin

@@ -15,6 +15,7 @@ import (
 	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
+	"github.com/Mar1eena/TrB_V3/internal/services/postgre/admin"
 	"github.com/Mar1eena/TrB_V3/internal/services/postgre/server"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
@@ -30,10 +31,14 @@ func App() {
 	defer stop()
 
 	var (
-		ch driver.Conn
-		pg *pgxpool.Pool
+		ch  driver.Conn
+		pg  *pgxpool.Pool
+		adm *admin.Admin
 	)
 	defer func() {
+		if adm != nil {
+			adm.Close()
+		}
 		if ch != nil {
 			if err := ch.Close(); err != nil {
 				l.Error().Err(err).Msg("ошибка закрытия соединения с ClickHouse")
@@ -48,8 +53,9 @@ func App() {
 	chSlot := wait.Go(g, "ClickHouse", func(ctx context.Context) (driver.Conn, error) {
 		return clickhouse.Connect(ctx, clickhouse.ClickHouse_config())
 	})
+	pgCfg := postgres.ConfigFromEnv()
 	pgSlot := wait.Go(g, "PostgreSQL", func(ctx context.Context) (*pgxpool.Pool, error) {
-		pool, err := postgres.Connect(ctx, postgres.ConfigFromEnv())
+		pool, err := postgres.Connect(ctx, pgCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -82,8 +88,10 @@ func App() {
 	l.Info().Str("port", port).Msg("data слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
-	service := server.New(ch, pg, l)
-	server.Register(gs, service)
+	biz := server.New(ch, pg, l)
+	adm = admin.New(pg, pgCfg, l)
+	server.Register(gs, biz)
+	admin.Register(gs, adm)
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {

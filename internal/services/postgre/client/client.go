@@ -23,7 +23,12 @@ func DialFromEnv() (*grpc.ClientConn, error) {
 	return Dial(addr)
 }
 
-// New returns a typed PostgreSQL client.
+// New returns a typed PostgreSQL (business) client.
 func New(conn grpc.ClientConnInterface) pgapi.PostgreSQLClient {
 	return pgapi.NewPostgreSQLClient(conn)
+}
+
+// NewAdmin returns a typed PostgreSQL_Admin client.
+func NewAdmin(conn grpc.ClientConnInterface) pgapi.PostgreSQL_AdminClient {
+	return pgapi.NewPostgreSQL_AdminClient(conn)
 }
