@@ -28,7 +28,7 @@ LIMIT $%d OFFSET $%d`, clickhouse.ShtSelectColumns, clause, next, next+1)
 
 	args := append(searchArgs, uint64(limit), uint64(offset))
 	var rows []chpkg.InstrumentRow
-	if err := s.ch.Select(ctx, &rows, query, args...); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query, args...); err != nil {
 		s.log.Error().Err(err).Str("q", q).Msg("не удалось загрузить инструменты")
 		return nil, status.Errorf(codes.Internal, "не удалось загрузить инструменты: %v", err)
 	}
@@ -62,7 +62,7 @@ type versionCountRow struct {
 func (s *Server) versionCounts(ctx context.Context) map[string]int32 {
 	out := make(map[string]int32)
 	var counts []versionCountRow
-	err := s.ch.Select(ctx, &counts, `
+	err := s.db(ctx).Select(ctx, &counts, `
 SELECT
 	uid,
 	uniqExact(version) AS version_count

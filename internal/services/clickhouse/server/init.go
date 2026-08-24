@@ -14,6 +14,7 @@ import (
 type ConnInfo struct {
 	Name     string
 	Host     string
+	Dial     string
 	Database string
 	Default  bool
 }
@@ -76,7 +77,7 @@ func (s *Server) lookup(ctx context.Context) driver.Conn {
 		return conn
 	}
 	for _, info := range s.infos {
-		if info.Name == name || info.Host == name {
+		if info.Name == name || dbconn.SameAddr(info.Host, name) || dbconn.SameAddr(info.Dial, name) {
 			if info.Default {
 				s.mu.Unlock()
 				return s.ch
@@ -85,6 +86,15 @@ func (s *Server) lookup(ctx context.Context) driver.Conn {
 				s.mu.Unlock()
 				return conn
 			}
+			host := info.Dial
+			if host == "" {
+				host = info.Host
+			}
+			s.mu.Unlock()
+			if dbconn.LooksLikeAddr(host) || dbconn.LooksLikeAddr(name) {
+				return s.dial(ctx, host)
+			}
+			return s.ch
 		}
 	}
 	s.mu.Unlock()

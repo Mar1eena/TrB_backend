@@ -46,6 +46,12 @@ x-services-config: &services-config
     - POSTGRES_USER
     - POSTGRES_PASSWORD
     - POSTGRES_DB
+    - POSTGRES_EXTRA_CONNECTIONS
+    - POSTGRES_EXTRA_CONNECTIONS_DOCKER
+    - POSTGRES_CONNECTION_NAME
+    - CLICKHOUSE_EXTRA_CONNECTIONS
+    - CLICKHOUSE_EXTRA_CONNECTIONS_DOCKER
+    - CLICKHOUSE_CONNECTION_NAME
   deploy:
     resources:
       limits:
@@ -120,6 +126,8 @@ services:
         condition: service_healthy
       postgre-db:
         condition: service_healthy
+      postgre-1c-db:
+        condition: service_healthy
 
   test:
     <<: [*services-config]
@@ -149,8 +157,8 @@ services:
     depends_on:
       clickhouse-db:
         condition: service_healthy
-
-  #################################################################
+      clickhouse-pg:
+        condition: service_healthy
 
   ############################# ENVOY #############################
   envoy:
@@ -224,6 +232,8 @@ services:
     # user: "101:101"
     networks:
       TrB_Network:
+        aliases:
+          - clickhouse-db
     healthcheck:
       test:
         [
@@ -301,11 +311,32 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-trb}
+    command:
+      - "postgres"
+      - "-c"
+      - "log_min_duration_statement=200"
+      - "-c"
+      - "log_checkpoints=on"
+      - "-c"
+      - "log_connections=on"
+      - "-c"
+      - "log_disconnections=on"
+      - "-c"
+      - "log_lock_waits=on"
+      - "-c"
+      - "log_temp_files=0"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - ${POSTGRES_DATA_PATH:-./volumes/postgres}:/var/lib/postgresql/data
       - ./configs/postgres/init.d:/docker-entrypoint-initdb.d:ro
     networks:
-      - TrB_Network
+      TrB_Network:
+        aliases:
+          - postgre-db
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-trb}"]
       interval: 10s
@@ -316,6 +347,70 @@ services:
         limits:
           cpus: "0.5"
           memory: 1G
+  
+  postgre-1c-db:
+    image: postgre-1c-db:latest
+    container_name: postgre-1c-db
+    hostname: postgre1c
+    build:
+      context: ./build/docker/postgre-1c-db
+      dockerfile: Dockerfile
+    command:
+      - "postgres"
+      - "-c"
+      - "listen_addresses=*"
+      - "-c"
+      - "max_connections=50"
+      - "-c"
+      - "shared_buffers=1GB"
+      - "-c"
+      - "effective_cache_size=4GB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "temp_file_limit=10GB"
+      - "-c"
+      - "idle_in_transaction_session_timeout=10s"
+      - "-c"
+      - "lock_timeout=1s"
+      - "-c"
+      - "statement_timeout=60s"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_1C_DB:-TrB_DB}
+      POSTGRES_USER: ${POSTGRES_1C_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_1C_PASSWORD:-1984}
+      PGDATA: "/var/lib/pgpro/1c-17/data"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - postgrespro-1c-data:/var/lib/pgpro/1c-17/data
+      - ${POSTGRES_1C_LOG_PATH:-./volumes/postgre-1c-db/log}:/var/log/postgresql
+      - ./configs/postgre-1c-db:/etc/pg-config:ro
+    ports:
+      - "5435:5432"
+    healthcheck:
+      # TCP, иначе peer по unix-сокету как root сыпет FATAL в лог каждые 10s
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER:-admin} -d $${POSTGRES_DB:-TrB_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 4G
+    networks:
+      TrB_Network:
 
   ################################################################################
 
@@ -334,6 +429,8 @@ services:
     command: -c /nats-server.conf --js --sd /jetstream -p 4222 -m 8222
     networks:
       TrB_Network:
+        aliases:
+          - nats-server
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8222/healthz"]
       interval: 10s
@@ -343,7 +440,86 @@ services:
   #####################################################################################
 
   ############################## MONITORING  ##########################################
-  # Логи: Vector (docker logs) → OTLP :4318 → ClickStack collector → otel_* → HyperDX
+  # Логи PostgreSQL (jsonlog + docker) → отдельный ClickStack / HyperDX :8082
+  clickhouse-pg:
+    image: clickhouse/clickstack-all-in-one:latest
+    container_name: trb-clickhouse-pg
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+      - "8124:8123"
+      - "9001:9000"
+      - "4319:4317"
+      - "4320:4318"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_PG_USERNAME:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PG_PASSWORD:-default}
+      IS_OSS: "true"
+      DEFAULT_CONNECTIONS: '[{"name":"Local ClickHouse","host":"http://127.0.0.1:8123","username":"${CLICKHOUSE_PG_USERNAME:-default}","password":"${CLICKHOUSE_PG_PASSWORD:-default}"}]'
+      DEFAULT_SOURCES: '[{"from":{"databaseName":"default","tableName":"otel_logs"},"kind":"log","timestampValueExpression":"Timestamp","name":"PostgreSQL Logs","displayedTimestampValueExpression":"Timestamp","implicitColumnExpression":"Body","serviceNameExpression":"ServiceName","bodyExpression":"Body","eventAttributesExpression":"LogAttributes","resourceAttributesExpression":"ResourceAttributes","defaultTableSelectExpression":"Timestamp,ServiceName,SeverityText,Body","severityTextExpression":"SeverityText","traceIdExpression":"TraceId","spanIdExpression":"SpanId","connection":"Local ClickHouse"}]'
+    volumes:
+      - clickhouse_pg_data:/var/lib/clickhouse
+      - hyperdx_pg_data:/data/db
+      - ./volumes/clickhouse-pg/log:/var/log
+      - ./configs/clickhouse/hyperdx/clickhouseProxy.js:/app/packages/api/build/routers/api/clickhouseProxy.js:ro
+      - ./configs/clickhouse/hyperdx/auth.js:/app/packages/api/build/middleware/auth.js:ro
+      - ./configs/clickhouse/hyperdx/entry.sh:/etc/local/entry.sh:ro
+    networks:
+      TrB_Network:
+        aliases:
+          - clickhouse-pg
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:8123/ping",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+
+  vector-pg:
+    image: timberio/vector:0.51.1-alpine
+    container_name: trb-vector-pg
+    hostname: vector-pg
+    restart: unless-stopped
+    command: ["--config", "/etc/vector/postgres.yaml"]
+    environment:
+      TZ: ${SYSTEM_TIMEZONE:-Europe/Moscow}
+    volumes:
+      - ./configs/vector/postgres.yaml:/etc/vector/postgres.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${POSTGRES_1C_LOG_PATH:-./volumes/postgre-1c-db/log}:/var/log/postgresql-1c:ro
+      - vector_pg_data:/var/lib/vector
+    ports:
+      - "8687:8686"
+    depends_on:
+      clickhouse-pg:
+        condition: service_healthy
+      postgre-1c-db:
+        condition: service_started
+      postgre-db:
+        condition: service_started
+    networks:
+      TrB_Network:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  # Логи сервисов: Vector (docker logs) → OTLP :4318 → ClickStack collector → otel_* → HyperDX
   vector:
     image: timberio/vector:0.51.1-alpine
     container_name: trb-vector
@@ -368,6 +544,10 @@ volumes:
   clickhouse_data:
   hyperdx_data:
   vector_data:
+  clickhouse_pg_data:
+  hyperdx_pg_data:
+  vector_pg_data:
+  postgrespro-1c-data:
 
 networks:
   TrB_Network:

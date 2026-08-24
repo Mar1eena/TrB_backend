@@ -56,13 +56,16 @@ func App() {
 		infos = append(infos, server.ConnInfo{
 			Name:     item.Name,
 			Host:     item.Host,
+			Dial:     item.Config.Addr,
 			Database: item.Database,
 			Default:  item.Default,
 		})
 		if item.Default {
 			continue
 		}
-		conn, err := clickhouse.Connect(ctx, item.Config)
+		conn, err := wait.Until(ctx, l, "ClickHouse:"+item.Name, func(ctx context.Context) (driver.Conn, error) {
+			return clickhouse.Connect(ctx, item.Config)
+		})
 		if err != nil {
 			l.Error().Err(err).Str("name", item.Name).Msg("не удалось подключить дополнительный ClickHouse")
 			continue

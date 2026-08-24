@@ -50,7 +50,7 @@ func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesRespo
 		}
 	}
 
-	if err := insertShares(ctx, s.ch, toWrite); err != nil {
+	if err := insertShares(ctx, s.db(ctx), toWrite); err != nil {
 		s.log.Error().Err(err).Int("rows", len(toWrite)).Msg("не удалось записать инструменты в sht")
 		return nil, status.Errorf(codes.Internal, "не удалось записать инструменты: %v", err)
 	}
@@ -71,7 +71,7 @@ func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesRespo
 
 func (s *Server) loadShares(ctx context.Context) (map[string]chpkg.InstrumentRow, error) {
 	var rows []chpkg.InstrumentRow
-	if err := s.ch.Select(ctx, &rows, "SELECT "+clickhouse.ShtSelectColumns+" FROM TrB.sht FINAL"); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, "SELECT "+clickhouse.ShtSelectColumns+" FROM TrB.sht FINAL"); err != nil {
 		return nil, err
 	}
 	out := make(map[string]chpkg.InstrumentRow, len(rows))

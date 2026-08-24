@@ -81,7 +81,9 @@ func App() {
 		if item.Default {
 			continue
 		}
-		pool, err := postgres.Connect(ctx, item.Config)
+		pool, err := wait.Until(ctx, l, "PostgreSQL:"+item.Name, func(ctx context.Context) (*pgxpool.Pool, error) {
+			return postgres.Connect(ctx, item.Config)
+		})
 		if err != nil {
 			l.Error().Err(err).Str("name", item.Name).Msg("не удалось подключить дополнительный PostgreSQL")
 			continue

@@ -1,0 +1,198 @@
+# Логи работы PostgreSQL → OTLP → clickhouse-pg (:4318) → default.otel_* → HyperDX :8082
+#
+# Источники:
+#   postgre-1c-db — jsonlog в /var/log/postgresql-1c
+#   postgre-db    — docker json-file (stderr)
+
+data_dir: /var/lib/vector
+
+api:
+  enabled: true
+  address: 0.0.0.0:8686
+
+sources:
+  postgres_1c_json:
+    type: file
+    include:
+      - /var/log/postgresql-1c/*.json
+      - /var/log/postgresql-1c/*.log.json
+    read_from: beginning
+    glob_minimum_cooldown_ms: 2000
+
+  docker_logs:
+    type: docker_logs
+    include_labels:
+      - "com.docker.compose.project=trb"
+
+transforms:
+  postgres_docker:
+    type: filter
+    inputs: [docker_logs]
+    condition: |
+      includes(["postgre-db", "postgre-1c-db"], string(.label."com.docker.compose.service") ?? "")
+
+  postgres_1c_to_otlp:
+    type: remap
+    inputs: [postgres_1c_json]
+    source: |
+      raw = string(.message) ?? ""
+      service = "postgre-1c-db"
+      severity_text = "INFO"
+      severity_number = 9
+      body = raw
+      log_attrs = [
+        {"key": "db.system", "value": {"stringValue": "postgresql"}},
+        {"key": "com.docker.compose.service", "value": {"stringValue": service}}
+      ]
+
+      if is_json(raw) {
+        j = parse_json!(raw)
+        sev = upcase(string(j.error_severity) ?? "LOG")
+        stmt = string(j.statement) ?? ""
+        msg = string(j.message) ?? raw
+        body = if stmt != "" { stmt } else { msg }
+
+        if sev == "PANIC" {
+          severity_text = "FATAL"
+          severity_number = 21
+        } else if sev == "FATAL" {
+          severity_text = "FATAL"
+          severity_number = 21
+        } else if sev == "ERROR" {
+          severity_text = "ERROR"
+          severity_number = 17
+        } else if sev == "WARNING" {
+          severity_text = "WARN"
+          severity_number = 13
+        } else if sev == "NOTICE" || sev == "LOG" || sev == "INFO" {
+          severity_text = "INFO"
+          severity_number = 9
+        } else if sev == "DEBUG" || starts_with(sev, "DEBUG") {
+          severity_text = "DEBUG"
+          severity_number = 5
+        }
+
+        fields = {
+          "user": string(j.user) ?? "",
+          "dbname": string(j.dbname) ?? "",
+          "pid": to_string(j.pid) ?? "",
+          "application_name": string(j.application_name) ?? "",
+          "backend_type": string(j.backend_type) ?? "",
+          "state_code": string(j.state_code) ?? "",
+          "error_severity": sev,
+          "detail": string(j.detail) ?? "",
+          "hint": string(j.hint) ?? "",
+          "query_id": to_string(j.query_id) ?? "",
+          "remote_host": string(j.remote_host) ?? "",
+          "command_tag": string(j.ps) ?? ""
+        }
+        for_each(fields) -> |k, v| {
+          if v != "" && v != "0" {
+            log_attrs = push(log_attrs, {"key": k, "value": {"stringValue": v}})
+          }
+        }
+
+        dur = parse_regex(msg, r'duration:\s*(?P<ms>[0-9.]+)\s*ms') ?? {}
+        dms = string(dur.ms) ?? ""
+        if dms != "" {
+          log_attrs = push(log_attrs, {"key": "duration_ms", "value": {"stringValue": dms}})
+        }
+      }
+
+      ts_ns, ts_err = to_unix_timestamp(.timestamp, unit: "nanoseconds")
+      if ts_err != null {
+        ts_ns = to_unix_timestamp!(now(), unit: "nanoseconds")
+      }
+
+      . = {
+        "resourceLogs": [{
+          "resource": {
+            "attributes": [
+              {"key": "service.name", "value": {"stringValue": service}},
+              {"key": "deployment.environment", "value": {"stringValue": "docker"}}
+            ]
+          },
+          "scopeLogs": [{
+            "scope": {
+              "name": "vector.postgres_jsonlog",
+              "version": "1.0.0"
+            },
+            "logRecords": [{
+              "timeUnixNano": ts_ns,
+              "severityNumber": severity_number,
+              "severityText": severity_text,
+              "body": {"stringValue": body},
+              "attributes": log_attrs
+            }]
+          }]
+        }]
+      }
+
+  postgres_docker_to_otlp:
+    type: remap
+    inputs: [postgres_docker]
+    source: |
+      raw_msg = string(.message) ?? ""
+      service = string(.label."com.docker.compose.service") ?? string(.container_name) ?? "postgres"
+      container = string(.container_name) ?? ""
+      body = raw_msg
+      severity_text = "INFO"
+      severity_number = 9
+
+      if match(raw_msg, r'(?i)\b(panic|fatal)\b') {
+        severity_text = "FATAL"
+        severity_number = 21
+      } else if match(raw_msg, r'(?i)\berror\b') {
+        severity_text = "ERROR"
+        severity_number = 17
+      } else if match(raw_msg, r'(?i)\bwarning\b') {
+        severity_text = "WARN"
+        severity_number = 13
+      } else if match(raw_msg, r'(?i)\bdebug\b') {
+        severity_text = "DEBUG"
+        severity_number = 5
+      }
+
+      ts_ns = to_unix_timestamp!(.timestamp, unit: "nanoseconds")
+
+      . = {
+        "resourceLogs": [{
+          "resource": {
+            "attributes": [
+              {"key": "service.name", "value": {"stringValue": service}},
+              {"key": "container.name", "value": {"stringValue": container}},
+              {"key": "deployment.environment", "value": {"stringValue": "docker"}}
+            ]
+          },
+          "scopeLogs": [{
+            "scope": {
+              "name": "vector.postgres_docker",
+              "version": "1.0.0"
+            },
+            "logRecords": [{
+              "timeUnixNano": ts_ns,
+              "severityNumber": severity_number,
+              "severityText": severity_text,
+              "body": {"stringValue": body},
+              "attributes": [
+                {"key": "db.system", "value": {"stringValue": "postgresql"}},
+                {"key": "com.docker.compose.service", "value": {"stringValue": service}}
+              ]
+            }]
+          }]
+        }]
+      }
+
+sinks:
+  clickhouse_pg_otlp:
+    type: opentelemetry
+    inputs: [postgres_1c_to_otlp, postgres_docker_to_otlp]
+    protocol:
+      type: http
+      uri: http://clickhouse-pg:4318/v1/logs
+      method: post
+      encoding:
+        codec: otlp
+      batch:
+        max_events: 100
+        timeout_secs: 5

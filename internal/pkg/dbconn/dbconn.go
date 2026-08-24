@@ -22,20 +22,7 @@ func FromContext(ctx context.Context) string {
 	return strings.TrimSpace(values[0])
 }
 
-// LooksLikeAddr reports whether the UI sent a host:port instead of a named extra.
 func LooksLikeAddr(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.ContainsAny(value, " /\\") {
-		return false
-	}
-	host, port, ok := strings.Cut(value, ":")
-	if !ok || host == "" || port == "" {
-		return false
-	}
-	for _, r := range port {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
+	_, _, ok := ParseHostPort(value)
+	return ok
 }

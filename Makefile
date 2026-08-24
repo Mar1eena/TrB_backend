@@ -1,6 +1,7 @@
 name = trb
 envoy_config = ./configs/envoy/envoy.yaml
 go_dockerfile = ./build/docker/services/go/Dockerfile
+postgre_1c_dockerfile = ./build/docker/postgre-1c-db/Dockerfile
 cmd_nats = ./internal/services/nats/cmd/main.go
 cmd_clickhouse = ./internal/services/clickhouse/cmd/main.go
 cmd_historiccandle = ./internal/services/historicCandle/cmd/main.go
@@ -10,7 +11,7 @@ cmd_postgre = ./internal/services/postgre/cmd/main.go
 cmd_test = ./internal/services/test/cmd/main.go
 TRB_PROTO_REF ?= main
 
-.PHONY: build up upd down envoy nats clickhouse historicCandle historicCandleScheduler postgre test services gene invest ver
+.PHONY: build up upd down envoy nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db test services gene invest ver
 
 up:
 	docker-compose --project-name=${name} up -d
@@ -42,6 +43,9 @@ invest:
 postgre:
 	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_postgre} -t postgre:latest
 
+postgre-1c-db:
+	docker build -f ${postgre_1c_dockerfile} ./build/docker/postgre-1c-db -t postgre-1c-db:latest
+
 test:
 	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_test} -t test:latest
 
@@ -50,7 +54,7 @@ ver:
 	go mod tidy
 
 # Сначала обновляет trb_proto, затем собирает все сервисы
-build: gene ver historicCandle historicCandleScheduler invest postgre test clickhouse nats envoy
+build: gene ver historicCandle historicCandleScheduler invest postgre postgre-1c-db test clickhouse nats envoy
 
 make upd: build up
 

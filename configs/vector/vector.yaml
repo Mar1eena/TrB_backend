@@ -22,7 +22,7 @@ transforms:
     type: filter
     inputs: [docker_logs]
     condition: |
-      !(string!(.label."com.docker.compose.service") == "vector")
+      !(includes(["vector", "vector-pg", "clickhouse-pg"], string(.label."com.docker.compose.service") ?? ""))
 
   to_otlp:
     type: remap

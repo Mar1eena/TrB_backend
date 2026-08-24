@@ -7,6 +7,10 @@ CLICKHOUSE_DATABASE="TrB"
 CLICKHOUSE_USERNAME="default"
 CLICKHOUSE_PASSWORD="default"
 
+# Доп. инстансы для UI (без новых proto): ListConnections + x-trb-connection
+CLICKHOUSE_EXTRA_CONNECTIONS=[{"name":"logs","addr":"localhost:9001","database":"default"}]
+CLICKHOUSE_EXTRA_CONNECTIONS_DOCKER=[{"name":"logs","addr":"clickhouse-pg:9000","database":"default"}]
+
 #CLICKSTACK / HyperDX
 # Пайплайн: stdout → Vector → OTLP :4318 → collector → default.otel_* → HyperDX :8080
 # UI: http://localhost:8080 (без регистрации — configs/clickhouse/hyperdx/entry.sh)
@@ -24,6 +28,9 @@ POSTGRES_DB=trb
 POSTGRES_DATA_PATH=./volumes/postgres
 POSTGRES_URL=localhost:5432
 POSTGRES_URL_DOCKER=postgre-db:5432
+
+POSTGRES_EXTRA_CONNECTIONS=[{"name":"1c","host":"127.0.0.1:5435","user":"admin","password":"1984","database":"TrB_DB"}]
+POSTGRES_EXTRA_CONNECTIONS_DOCKER=[{"name":"1c","host":"postgre-1c-db:5432","user":"admin","password":"1984","database":"TrB_DB"}]
 
 # WEB UI
 WEB_UI_API_PORT=3003

@@ -28,7 +28,7 @@ WHERE uid = $1
 ORDER BY version DESC`
 
 	var rows []chpkg.InstrumentRow
-	if err := s.ch.Select(ctx, &rows, query, uid); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query, uid); err != nil {
 		s.log.Error().Err(err).Str("uid", uid).Msg("не удалось загрузить версии инструмента")
 		return nil, status.Errorf(codes.Internal, "не удалось загрузить версии: %v", err)
 	}

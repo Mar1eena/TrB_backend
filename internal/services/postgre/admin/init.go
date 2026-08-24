@@ -90,7 +90,7 @@ func (a *Admin) active(ctx context.Context) *Admin {
 		return peer
 	}
 	for _, peer := range a.peers {
-		if peer.host == name {
+		if peer.host == name || dbconn.SameAddr(peer.host, name) || dbconn.SameAddr(peer.cfg.Host(), name) {
 			a.mu.Unlock()
 			return peer
 		}
@@ -117,14 +117,31 @@ func Register(srv *grpc.Server, service *Admin) {
 }
 
 func (a *Admin) ensurePeer(ctx context.Context, host string) (*Admin, error) {
+	dial := dbconn.Canonical(host)
 	a.mu.Lock()
 	if peer, ok := a.peers[host]; ok {
 		a.mu.Unlock()
 		return peer, nil
 	}
+	if peer, ok := a.peers[dial]; ok {
+		a.mu.Unlock()
+		return peer, nil
+	}
+	for _, peer := range a.peers {
+		if dbconn.SameAddr(peer.host, host) || dbconn.SameAddr(peer.cfg.Host(), host) {
+			a.mu.Unlock()
+			return peer, nil
+		}
+	}
 	a.mu.Unlock()
 
-	cfg := a.cfg.WithHost(host)
+	cfg := a.cfg.WithHost(dial)
+	for _, item := range postgres.NamedConfigs() {
+		if item.Name == host || dbconn.SameAddr(item.Host, host) || dbconn.SameAddr(item.Config.Host(), host) {
+			cfg = item.Config
+			break
+		}
+	}
 	home, err := postgres.Connect(ctx, cfg.WithMaxConns(2))
 	if err != nil {
 		a.log.Error().Err(err).Str("host", host).Msg("не удалось открыть PostgreSQL по адресу из UI")

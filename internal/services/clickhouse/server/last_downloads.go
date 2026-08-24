@@ -58,7 +58,7 @@ LIMIT $%d OFFSET $%d`, clause, next, next+1)
 
 	args := append(searchArgs, uint64(limit), uint64(offset))
 	var rows []lastDownloadRow
-	if err := s.ch.Select(ctx, &rows, query, args...); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query, args...); err != nil {
 		s.log.Error().Err(err).Str("q", q).Msg("не удалось загрузить историю загрузок")
 		return nil, status.Errorf(codes.Internal, "не удалось загрузить историю загрузок: %v", err)
 	}
