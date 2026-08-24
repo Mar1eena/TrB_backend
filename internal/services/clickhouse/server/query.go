@@ -54,7 +54,7 @@ func isStreamDirectSelectError(err error) bool {
 func (s *Server) executeQueryRaw(ctx context.Context, q string, maxRows uint32) (*chmgr.ExecuteQueryResponse, error) {
 	start := time.Now()
 
-	rows, err := s.ch.Query(ctx, q)
+	rows, err := s.db(ctx).Query(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +158,7 @@ func (s *Server) tableEngine(ctx context.Context, database, table string) (strin
 	var rows []struct {
 		Engine string `ch:"engine"`
 	}
-	err := s.ch.Select(ctx, &rows, `
+	err := s.db(ctx).Select(ctx, &rows, `
 SELECT engine
 FROM system.tables
 WHERE database = $1 AND name = $2

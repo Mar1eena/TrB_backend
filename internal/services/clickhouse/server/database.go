@@ -63,13 +63,13 @@ func (s *Server) ListDatabases(ctx context.Context, req *chmgr.ListDatabasesRequ
 	}
 	query += ` ORDER BY name`
 	var rows []databaseRow
-	if err := s.ch.Select(ctx, &rows, query, args...); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query, args...); err != nil {
 		s.log.Error().Err(err).Msg("не удалось получить список баз")
 		return nil, chpkg.MapErr(err)
 	}
 
 	var stats []dbStatRow
-	_ = s.ch.Select(ctx, &stats, `
+	_ = s.db(ctx).Select(ctx, &stats, `
 SELECT
 	database,
 	count() AS cnt,
@@ -114,7 +114,7 @@ func (s *Server) DatabaseInfo(ctx context.Context, req *chmgr.DatabaseName) (*ch
 		return nil, err
 	}
 	var rows []databaseRow
-	if err := s.ch.Select(ctx, &rows, `SELECT name, engine, comment FROM system.databases WHERE name = $1`, name); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, `SELECT name, engine, comment FROM system.databases WHERE name = $1`, name); err != nil {
 		s.log.Error().Err(err).Str("name", name).Msg("не удалось получить базу")
 		return nil, chpkg.MapErr(err)
 	}
@@ -123,7 +123,7 @@ func (s *Server) DatabaseInfo(ctx context.Context, req *chmgr.DatabaseName) (*ch
 	}
 
 	var stats []dbStatRow
-	_ = s.ch.Select(ctx, &stats, `
+	_ = s.db(ctx).Select(ctx, &stats, `
 SELECT
 	database,
 	count() AS cnt,

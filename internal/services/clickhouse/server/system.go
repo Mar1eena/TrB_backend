@@ -41,7 +41,7 @@ FROM system.processes
 ORDER BY elapsed DESC`
 
 	var rows []processRow
-	if err := s.ch.Select(ctx, &rows, query); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query); err != nil {
 		s.log.Error().Err(err).Msg("не удалось получить список активных процессов")
 		return nil, chpkg.MapErr(err)
 	}
@@ -110,7 +110,7 @@ FROM system.disks
 ORDER BY name`
 
 	var rows []diskRow
-	if err := s.ch.Select(ctx, &rows, query); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query); err != nil {
 		s.log.Error().Err(err).Msg("не удалось получить список дисков")
 		return nil, chpkg.MapErr(err)
 	}
@@ -139,13 +139,13 @@ type metricRow struct {
 
 func (s *Server) GetMetrics(ctx context.Context, _ *chmgr.GetMetricsRequest) (*chmgr.MetricsResponse, error) {
 	var metricsRows []metricRow
-	_ = s.ch.Select(ctx, &metricsRows, `
+	_ = s.db(ctx).Select(ctx, &metricsRows, `
 SELECT metric AS name, toFloat64(value) AS value, description
 FROM system.metrics
 ORDER BY metric`)
 
 	var asyncRows []metricRow
-	_ = s.ch.Select(ctx, &asyncRows, `
+	_ = s.db(ctx).Select(ctx, &asyncRows, `
 SELECT metric AS name, toFloat64(value) AS value, description
 FROM system.asynchronous_metrics
 ORDER BY metric`)

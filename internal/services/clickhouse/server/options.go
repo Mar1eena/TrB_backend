@@ -83,7 +83,7 @@ func (s *Server) selectNames(ctx context.Context, query string) []string {
 	var rows []struct {
 		Name string `ch:"name"`
 	}
-	if err := s.ch.Select(ctx, &rows, query); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query); err != nil {
 		s.log.Warn().Err(err).Str("query", query).Msg("не удалось загрузить каталог из ClickHouse")
 		return nil
 	}

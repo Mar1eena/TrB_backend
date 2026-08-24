@@ -76,6 +76,20 @@ func App() {
 		l.Fatal().Err(err).Msg("не удалось подготовить схему TrB.sht")
 	}
 
+	var peers []admin.Peer
+	for _, item := range postgres.NamedConfigs() {
+		if item.Default {
+			continue
+		}
+		pool, err := postgres.Connect(ctx, item.Config)
+		if err != nil {
+			l.Error().Err(err).Str("name", item.Name).Msg("не удалось подключить дополнительный PostgreSQL")
+			continue
+		}
+		peers = append(peers, admin.Peer{Name: item.Name, Host: item.Host, Home: pool, Cfg: item.Config})
+		l.Info().Str("name", item.Name).Str("host", item.Host).Msg("дополнительный PostgreSQL подключён")
+	}
+
 	port := env.Get("PORT")
 	if port == "" {
 		port = "9091"
@@ -89,7 +103,7 @@ func App() {
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
 	biz := server.New(ch, pg, l)
-	adm = admin.New(pg, pgCfg, l)
+	adm = admin.NewWithPeers(pg, pgCfg, l, peers)
 	server.Register(gs, biz)
 	admin.Register(gs, adm)
 

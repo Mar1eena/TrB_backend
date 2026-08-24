@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Mar1eena/TrB_V3/internal/pkg/db/postgres"
+	"github.com/Mar1eena/TrB_V3/internal/pkg/dbconn"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	pgpkg "github.com/Mar1eena/TrB_V3/internal/services/postgre/pkg"
 	pgapi "github.com/Mar1eena/trb_proto/gen/go/postgresql"
@@ -21,10 +22,13 @@ import (
 
 type Admin struct {
 	pgapi.UnimplementedPostgreSQL_AdminServer
+	name   string
+	host   string
 	home   *pgxpool.Pool
 	homeDB string
 	cfg    postgres.Config
 	log    zlog.Logger
+	peers  map[string]*Admin
 
 	mu    sync.Mutex
 	extra map[string]*pgxpool.Pool
@@ -32,21 +36,127 @@ type Admin struct {
 
 var _ pgapi.PostgreSQL_AdminServer = (*Admin)(nil)
 
+type Peer struct {
+	Name string
+	Host string
+	Home *pgxpool.Pool
+	Cfg  postgres.Config
+}
+
 func New(home *pgxpool.Pool, cfg postgres.Config, log zlog.Logger) *Admin {
-	return &Admin{
+	return NewWithPeers(home, cfg, log, nil)
+}
+
+func NewWithPeers(home *pgxpool.Pool, cfg postgres.Config, log zlog.Logger, peers []Peer) *Admin {
+	name := postgres.DefaultConnectionName()
+	root := &Admin{
+		name:   name,
+		host:   cfg.Host(),
 		home:   home,
 		homeDB: cfg.Database(),
 		cfg:    cfg,
 		log:    log,
+		peers:  make(map[string]*Admin, len(peers)),
 		extra:  make(map[string]*pgxpool.Pool),
 	}
+	for _, peer := range peers {
+		if peer.Name == "" || peer.Name == name || peer.Home == nil {
+			continue
+		}
+		root.peers[peer.Name] = &Admin{
+			name:   peer.Name,
+			host:   peer.Host,
+			home:   peer.Home,
+			homeDB: peer.Cfg.Database(),
+			cfg:    peer.Cfg,
+			log:    log,
+			extra:  make(map[string]*pgxpool.Pool),
+		}
+	}
+	return root
+}
+
+func (a *Admin) active(ctx context.Context) *Admin {
+	if a == nil {
+		return a
+	}
+	name := dbconn.FromContext(ctx)
+	if name == "" || name == a.name {
+		return a
+	}
+	a.mu.Lock()
+	if peer, ok := a.peers[name]; ok {
+		a.mu.Unlock()
+		return peer
+	}
+	for _, peer := range a.peers {
+		if peer.host == name {
+			a.mu.Unlock()
+			return peer
+		}
+	}
+	a.mu.Unlock()
+	if dbconn.LooksLikeAddr(name) {
+		peer, err := a.ensurePeer(ctx, name)
+		if err != nil {
+			return &Admin{
+				name:  name,
+				host:  name,
+				log:   a.log,
+				peers: map[string]*Admin{},
+				extra: map[string]*pgxpool.Pool{},
+			}
+		}
+		return peer
+	}
+	return a
 }
 
 func Register(srv *grpc.Server, service *Admin) {
 	pgapi.RegisterPostgreSQL_AdminServer(srv, service)
 }
 
+func (a *Admin) ensurePeer(ctx context.Context, host string) (*Admin, error) {
+	a.mu.Lock()
+	if peer, ok := a.peers[host]; ok {
+		a.mu.Unlock()
+		return peer, nil
+	}
+	a.mu.Unlock()
+
+	cfg := a.cfg.WithHost(host)
+	home, err := postgres.Connect(ctx, cfg.WithMaxConns(2))
+	if err != nil {
+		a.log.Error().Err(err).Str("host", host).Msg("не удалось открыть PostgreSQL по адресу из UI")
+		return nil, err
+	}
+	peer := &Admin{
+		name:   host,
+		host:   host,
+		home:   home,
+		homeDB: cfg.Database(),
+		cfg:    cfg,
+		log:    a.log,
+		peers:  map[string]*Admin{},
+		extra:  map[string]*pgxpool.Pool{},
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if existing, ok := a.peers[host]; ok {
+		home.Close()
+		return existing, nil
+	}
+	a.peers[host] = peer
+	return peer, nil
+}
+
 func (a *Admin) Close() {
+	for _, peer := range a.peers {
+		peer.Close()
+		if peer.home != nil {
+			peer.home.Close()
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for name, p := range a.extra {
@@ -65,6 +175,10 @@ func (a *Admin) closeExtra(name string) {
 }
 
 func (a *Admin) poolFor(ctx context.Context, database string) (*pgxpool.Pool, error) {
+	a = a.active(ctx)
+	if a.home == nil {
+		return nil, status.Errorf(codes.Unavailable, "нет подключения к PostgreSQL %s", a.host)
+	}
 	database = strings.TrimSpace(database)
 	if database == "" || database == a.homeDB {
 		return a.home, nil
@@ -95,6 +209,7 @@ func (a *Admin) poolFor(ctx context.Context, database string) (*pgxpool.Pool, er
 }
 
 func (a *Admin) maint(ctx context.Context) (*pgxpool.Pool, error) {
+	a = a.active(ctx)
 	if a.homeDB == "postgres" || a.homeDB == "" {
 		return a.home, nil
 	}

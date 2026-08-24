@@ -186,7 +186,7 @@ WHERE database = $1`
 	}
 	query += ` ORDER BY name`
 	var rows []tableRow
-	if err := s.ch.Select(ctx, &rows, query, args...); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query, args...); err != nil {
 		s.log.Error().Err(err).Str("database", database).Msg("не удалось получить список таблиц")
 		return nil, chpkg.MapErr(err)
 	}
@@ -211,7 +211,7 @@ func (s *Server) TableInfo(ctx context.Context, req *chmgr.TableName) (*chmgr.Ta
 		return nil, err
 	}
 	var rows []tableRow
-	err = s.ch.Select(ctx, &rows, `
+	err = s.db(ctx).Select(ctx, &rows, `
 SELECT
 	database, name, engine,
 	total_rows, total_bytes,
@@ -241,7 +241,7 @@ WHERE database = $1 AND name = $2`, database, name)
 		Count uint64  `ch:"cnt"`
 		Bytes *uint64 `ch:"bytes"`
 	}
-	_ = s.ch.Select(ctx, &partStats, `
+	_ = s.db(ctx).Select(ctx, &partStats, `
 SELECT
 	count() AS cnt,
 	sum(data_uncompressed_bytes) AS bytes
@@ -262,7 +262,7 @@ WHERE database = $1 AND table = $2 AND active = 1`, database, name)
 
 func (s *Server) listColumns(ctx context.Context, tbl, database, name string) ([]*chmgr.Column, error) {
 	var described []describeColumnRow
-	if err := s.ch.Select(ctx, &described, "DESCRIBE TABLE "+tbl); err == nil {
+	if err := s.db(ctx).Select(ctx, &described, "DESCRIBE TABLE "+tbl); err == nil {
 		items := make([]*chmgr.Column, 0, len(described))
 		for i := range described {
 			items = append(items, columnFromDescribe(&described[i]))
@@ -270,7 +270,7 @@ func (s *Server) listColumns(ctx context.Context, tbl, database, name string) ([
 		return items, nil
 	}
 	var cols []systemColumnRow
-	if err := s.ch.Select(ctx, &cols, `
+	if err := s.db(ctx).Select(ctx, &cols, `
 SELECT
 	name, type, default_kind, default_expression,
 	compression_codec, comment

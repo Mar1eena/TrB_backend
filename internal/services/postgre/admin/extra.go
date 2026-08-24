@@ -87,6 +87,7 @@ func (a *Admin) DropPartition(ctx context.Context, req *pgapi.DropPartitionReque
 }
 
 func (a *Admin) ListProcesses(ctx context.Context, req *pgapi.ListProcessesRequest) (*pgapi.ProcessList, error) {
+	a = a.active(ctx)
 	if req == nil {
 		req = &pgapi.ListProcessesRequest{}
 	}
@@ -151,6 +152,7 @@ WHERE pid <> pg_backend_pid()`
 }
 
 func (a *Admin) KillProcess(ctx context.Context, req *pgapi.KillProcessRequest) (*pgapi.Status, error) {
+	a = a.active(ctx)
 	if req == nil || req.GetPid() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "pid обязателен")
 	}
@@ -171,6 +173,7 @@ func (a *Admin) KillProcess(ctx context.Context, req *pgapi.KillProcessRequest) 
 }
 
 func (a *Admin) ListLocks(ctx context.Context, req *pgapi.ListLocksRequest) (*pgapi.LockList, error) {
+	a = a.active(ctx)
 	if req == nil {
 		req = &pgapi.ListLocksRequest{}
 	}
@@ -227,6 +230,7 @@ WHERE true`
 }
 
 func (a *Admin) ListTablespaces(ctx context.Context, _ *pgapi.ListTablespacesRequest) (*pgapi.TablespaceList, error) {
+	a = a.active(ctx)
 	rows, err := a.home.Query(ctx, `
 SELECT
 	spcname,
@@ -259,6 +263,7 @@ ORDER BY spcname`)
 }
 
 func (a *Admin) GetMetrics(ctx context.Context, req *pgapi.GetMetricsRequest) (*pgapi.MetricsResponse, error) {
+	a = a.active(ctx)
 	if req == nil {
 		req = &pgapi.GetMetricsRequest{}
 	}
@@ -320,6 +325,7 @@ FROM pg_catalog.pg_stat_database WHERE datname IS NOT NULL`
 }
 
 func (a *Admin) GetTableOptions(ctx context.Context, _ *pgapi.TableOptionsRequest) (*pgapi.TableOptionsResponse, error) {
+	a = a.active(ctx)
 	types, err := a.selectNames(ctx, `
 SELECT typname FROM pg_catalog.pg_type
 WHERE typnamespace = 'pg_catalog'::regnamespace

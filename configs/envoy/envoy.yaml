@@ -57,7 +57,7 @@ static_resources:
                             - prefix: "http://"
                             - prefix: "https://"
                           allow_methods: GET, PUT, DELETE, POST, PATCH, OPTIONS
-                          allow_headers: keep-alive,user-agent,cache-control,content-type,content-transfer-encoding,x-accept-content-transfer-encoding,x-accept-response-streaming,x-user-agent,x-grpc-web,grpc-timeout,authorization,x-request-id,traceparent,tracestate,x-trace-id,x-span-id,x-parent-span-id,x-correlation-id,x-caller-service,x-initiator-service,x-app-name
+                          allow_headers: keep-alive,user-agent,cache-control,content-type,content-transfer-encoding,x-accept-content-transfer-encoding,x-accept-response-streaming,x-user-agent,x-grpc-web,grpc-timeout,authorization,x-request-id,traceparent,tracestate,x-trace-id,x-span-id,x-parent-span-id,x-correlation-id,x-caller-service,x-initiator-service,x-app-name,x-trb-connection
                           expose_headers: grpc-status,grpc-message,grpc-status-details-bin,x-request-id
                           max_age: "86400"
                       routes:

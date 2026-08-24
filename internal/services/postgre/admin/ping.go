@@ -8,6 +8,7 @@ import (
 )
 
 func (a *Admin) Ping(ctx context.Context, _ *pgapi.PingRequest) (*pgapi.PingResponse, error) {
+	a = a.active(ctx)
 	var version string
 	if err := a.home.QueryRow(ctx, `SELECT version()`).Scan(&version); err != nil {
 		return nil, pgpkg.MapErr(err)
@@ -17,6 +18,7 @@ func (a *Admin) Ping(ctx context.Context, _ *pgapi.PingRequest) (*pgapi.PingResp
 }
 
 func (a *Admin) ServerInfo(ctx context.Context, _ *pgapi.ServerInfoRequest) (*pgapi.ServerInfoResponse, error) {
+	a = a.active(ctx)
 	var (
 		version       string
 		versionNum    int32

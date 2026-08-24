@@ -28,6 +28,7 @@ JOIN pg_catalog.pg_tablespace t ON t.oid = d.dattablespace
 LEFT JOIN pg_catalog.pg_stat_database s ON s.datid = d.oid`
 
 func (a *Admin) CreateDatabase(ctx context.Context, req *pgapi.DatabaseSpec) (*pgapi.Status, error) {
+	a = a.active(ctx)
 	if req != nil && req.GetIfNotExists() {
 		exists, err := a.databaseExists(ctx, req.GetName())
 		if err != nil {
@@ -58,6 +59,7 @@ func (a *Admin) CreateDatabase(ctx context.Context, req *pgapi.DatabaseSpec) (*p
 }
 
 func (a *Admin) DropDatabase(ctx context.Context, req *pgapi.DatabaseName) (*pgapi.Status, error) {
+	a = a.active(ctx)
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "тело запроса обязательно")
 	}
@@ -83,6 +85,7 @@ func (a *Admin) DropDatabase(ctx context.Context, req *pgapi.DatabaseName) (*pga
 }
 
 func (a *Admin) ListDatabases(ctx context.Context, req *pgapi.ListDatabasesRequest) (*pgapi.DatabaseList, error) {
+	a = a.active(ctx)
 	if req == nil {
 		req = &pgapi.ListDatabasesRequest{}
 	}
@@ -103,6 +106,7 @@ func (a *Admin) ListDatabases(ctx context.Context, req *pgapi.ListDatabasesReque
 }
 
 func (a *Admin) DatabaseInfo(ctx context.Context, req *pgapi.DatabaseName) (*pgapi.Database, error) {
+	a = a.active(ctx)
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "тело запроса обязательно")
 	}

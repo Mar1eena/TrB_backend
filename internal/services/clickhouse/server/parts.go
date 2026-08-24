@@ -60,7 +60,7 @@ WHERE database = $1 AND table = $2`
 	query += " ORDER BY modification_time DESC, name"
 
 	var rows []partRow
-	if err := s.ch.Select(ctx, &rows, query, db, tbl); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query, db, tbl); err != nil {
 		s.log.Error().Err(err).Str("database", db).Str("table", tbl).Msg("не удалось получить партиции")
 		return nil, chpkg.MapErr(err)
 	}

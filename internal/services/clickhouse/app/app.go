@@ -48,6 +48,36 @@ func App() {
 		l.Fatal().Err(err).Msg("не удалось подготовить схему TrB.sht")
 	}
 
+	named := clickhouse.NamedConfigs()
+	extras := make(map[string]driver.Conn)
+	infos := make([]server.ConnInfo, 0, len(named))
+	defaultName := clickhouse.DefaultConnectionName()
+	for _, item := range named {
+		infos = append(infos, server.ConnInfo{
+			Name:     item.Name,
+			Host:     item.Host,
+			Database: item.Database,
+			Default:  item.Default,
+		})
+		if item.Default {
+			continue
+		}
+		conn, err := clickhouse.Connect(ctx, item.Config)
+		if err != nil {
+			l.Error().Err(err).Str("name", item.Name).Msg("не удалось подключить дополнительный ClickHouse")
+			continue
+		}
+		extras[item.Name] = conn
+		l.Info().Str("name", item.Name).Str("addr", item.Host).Msg("дополнительный ClickHouse подключён")
+	}
+	defer func() {
+		for name, conn := range extras {
+			if err := conn.Close(); err != nil {
+				l.Error().Err(err).Str("name", name).Msg("ошибка закрытия дополнительного ClickHouse")
+			}
+		}
+	}()
+
 	port := env.Get("PORT")
 	if port == "" {
 		port = "9091"
@@ -60,7 +90,7 @@ func App() {
 	l.Info().Str("port", port).Msg("clickhouse слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
-	service := server.New(ch, l)
+	service := server.NewWithExtras(ch, l, extras, defaultName, infos...)
 	server.Register(gs, service)
 
 	eg, egCtx := errgroup.WithContext(ctx)
