@@ -73,6 +73,40 @@
           }
         }
       ]
+    },
+    {
+      "config": {
+        "name": "manager_indicators",
+        "description": "Задачи на расчёт индикаторов по свечам из hct_indicator_tasks_mv.",
+        "subjects": [
+          "TrB.Indicator.Task",
+          "TrB.Indicator.Task.>"
+        ],
+        "retention": 2,
+        "storage": 0,
+        "replicas": 1,
+        "max_consumers": -1,
+        "max_msgs": -1,
+        "max_bytes": -1,
+        "max_age": 0,
+        "max_msg_size": -1,
+        "discard": 0,
+        "allow_direct": false,
+        "no_ack": false,
+        "duplicate_window": 120000000000,
+        "sealed": false,
+        "deny_delete": false,
+        "deny_purge": false,
+        "allow_rollup": false,
+        "compression": 0,
+        "first_seq_cfg": 0,
+        "allow_msg_ttl": false,
+        "subject_delete_marker_ttl": 0,
+        "metadata": {
+          "_nats.req.level": "0"
+        }
+      },
+      "consumers": []
     }
   ]
 }

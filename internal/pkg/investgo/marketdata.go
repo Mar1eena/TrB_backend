@@ -21,6 +21,20 @@ type MarketDataServiceClient struct {
 	pbClient pb.MarketDataServiceClient
 }
 
+// NewMarketDataClient оборачивает уже открытое gRPC-соединение
+// (внутренний сервис invest, без TLS и токена T-Invest).
+func NewMarketDataClient(ctx context.Context, conn grpc.ClientConnInterface, l Logger) *MarketDataServiceClient {
+	md := &MarketDataServiceClient{
+		logger:   l,
+		ctx:      ctx,
+		pbClient: pb.NewMarketDataServiceClient(conn),
+	}
+	if c, ok := conn.(*grpc.ClientConn); ok {
+		md.conn = c
+	}
+	return md
+}
+
 // GetCandles - Метод запроса исторических свечей по инструменту
 func (md *MarketDataServiceClient) GetCandles(
 	instrumentId string,

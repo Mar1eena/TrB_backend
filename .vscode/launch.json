@@ -19,7 +19,6 @@
             "mode": "auto",
             "program": "${workspaceFolder}/internal/services/historicCandle/cmd/main.go",
             "cwd": "${workspaceFolder}",
-            "console": "integratedTerminal"
         },
         {
             "name": "Historical Candle Scheduler",

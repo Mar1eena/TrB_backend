@@ -28,6 +28,10 @@ POSTGRES_DB=trb
 POSTGRES_DATA_PATH=./volumes/postgres
 POSTGRES_URL=localhost:5432
 POSTGRES_URL_DOCKER=postgre-db:5432
+# Адрес Postgres с точки зрения ClickHouse (postgresql() выполняется на сервере CH).
+# Локальная отладка + CH в Docker: postgre-db:5432 или named collection trb.
+POSTGRES_URL_CLICKHOUSE=postgre-db:5432
+POSTGRES_CLICKHOUSE_NAMED_COLLECTION=trb
 
 POSTGRES_EXTRA_CONNECTIONS=[{"name":"1c","host":"127.0.0.1:5435","user":"admin","password":"1984","database":"TrB_DB"}]
 POSTGRES_EXTRA_CONNECTIONS_DOCKER=[{"name":"1c","host":"postgre-1c-db:5432","user":"admin","password":"1984","database":"TrB_DB"}]

@@ -139,6 +139,60 @@ type ShareData struct {
 	StartTime time.Time `ch:"start_time"`
 }
 
+// SelectSchedulerTargets returns enabled scheduler targets joined with sht
+// and the last download watermark. limit <= 0 means no LIMIT clause.
+func SelectSchedulerTargets(ctx context.Context, conn driver.Conn, pgTableExpr string, limit int, minLagSec float64) ([]ShareData, error) {
+	if minLagSec <= 0 {
+		minLagSec = 60
+	}
+	query := fmt.Sprintf(`
+SELECT
+	uid,
+	interval,
+	start_time
+FROM (
+	SELECT
+		sht.uid AS uid,
+		toInt32(hst.interval) AS interval,
+		greatest(
+			maxMerge(hctlda.max_time),
+			if(hst.interval = 1, sht.first_1min_candle_date, sht.first_1day_candle_date)
+		) AS start_time,
+		dateDiff(
+			'second',
+			greatest(
+				maxMerge(hctlda.max_time),
+				if(hst.interval = 1, sht.first_1min_candle_date, sht.first_1day_candle_date)
+			),
+			now64()
+		) AS lag_sec
+	FROM TrB.sht AS sht FINAL
+	INNER JOIN %s AS hst
+		ON sht.uid = hst.uid
+		AND hst.enabled = true
+	LEFT JOIN TrB.hct_last_download_agg AS hctlda FINAL
+		ON sht.uid = hctlda.uid
+		AND hctlda.interval = hst.interval
+	WHERE if(hst.interval = 1, sht.first_1min_candle_date, sht.first_1day_candle_date) > 0
+	GROUP BY
+		sht.uid,
+		hst.interval,
+		sht.first_1min_candle_date,
+		sht.first_1day_candle_date
+)
+WHERE lag_sec > %f
+ORDER BY lag_sec DESC`, pgTableExpr, minLagSec)
+	if limit > 0 {
+		query += fmt.Sprintf("\nLIMIT %d", limit)
+	}
+
+	var results []ShareData
+	if err := conn.Select(ctx, &results, query); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 func GetLastHC(
 	ctx context.Context,
 	conn driver.Conn,
@@ -190,23 +244,56 @@ func (sh ShareData) Processing(
 	from, to := sh.StartTime, time.Now()
 	interval := pb.CandleInterval(sh.Interval)
 	intervals := getIntervals(from, to, interval)
-	for i := len(intervals) - 1; i > 0; i-- {
-		diff := intervals[i-1].Sub(intervals[i]).Seconds()
-		if i == 1 && diff < interval_update {
+	totalChunks := len(intervals) - 1
+
+	if totalChunks <= 0 {
+		if to.Sub(from).Seconds() < interval_update {
 			return ErrIntervalUpdate
 		}
-		// Получаем из тинькофф свечи
-		resp, err := md.GetCandles(sh.Uid, interval, intervals[i], intervals[i-1],
-			pb.GetCandlesRequest_CANDLE_SOURCE_UNSPECIFIED, 0)
-		if err != nil {
-			return err
+		return sh.loadWindow(ctx, md, conn, interval, from, to, 1, 1)
+	}
+
+	for i := len(intervals) - 1; i > 0; i-- {
+		if i == 1 && intervals[0].Sub(intervals[1]).Seconds() < interval_update {
+			return ErrIntervalUpdate
 		}
-		// Добавляем в clickhouse свечи и информацию о загрузке данных
-		err = resp.InsertHC(ctx, conn)
-		if err != nil {
+		chunk := totalChunks - i + 1
+		if err := sh.loadWindow(ctx, md, conn, interval, intervals[i], intervals[i-1], chunk, totalChunks); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+func (sh ShareData) loadWindow(
+	ctx context.Context,
+	md *MarketDataServiceClient,
+	conn driver.Conn,
+	interval pb.CandleInterval,
+	windowFrom, windowTo time.Time,
+	chunk, totalChunks int,
+) error {
+	resp, err := md.GetCandles(sh.Uid, interval, windowFrom, windowTo,
+		pb.GetCandlesRequest_CANDLE_SOURCE_UNSPECIFIED, 0)
+	if err != nil {
+		return err
+	}
+	candlesCount := len(resp.GetCandles())
+	if err = resp.InsertHC(ctx, conn); err != nil {
+		return err
+	}
+	// if md.logger != nil {
+	md.logger.Infof(
+		"загружен интервал uid=%s interval=%s from=%s to=%s candles=%d chunk=%d/%d",
+		sh.Uid,
+		interval.String(),
+		windowFrom.Format(time.RFC3339),
+		windowTo.Format(time.RFC3339),
+		candlesCount,
+		chunk,
+		totalChunks,
+	)
+	// }
 	return nil
 }
 

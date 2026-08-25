@@ -2,92 +2,97 @@ package app
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	format_schemas "github.com/Mar1eena/TrB_V3/configs/clickhouse/format_schemas"
-	trb_nats "github.com/Mar1eena/TrB_V3/internal/pkg/brokers/nats"
+	"github.com/Mar1eena/TrB_V3/internal/pkg/db/postgres"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/investgo"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
-	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
-	hctpkg "github.com/Mar1eena/TrB_V3/internal/services/historicCandle/pkg"
-	"github.com/nats-io/nats.go"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
-	pb "opensource.tbank.ru/invest/invest-go/proto"
-)
-
-const (
-	// fetchWait — сколько ждать новое задание. Пустая очередь — штатная ситуация,
-	// не ошибка брокера. nats.Context без deadline сам ставит такой же timeout
-	// и возвращает context.DeadlineExceeded вместо nats.ErrTimeout.
-	fetchWait = 5 * time.Second
-	// nakDelay — пауза перед повторной доставкой, чтобы отмена RPC
-	// не крутила одно и то же задание в плотном цикле.
-	nakDelay = 5 * time.Second
 )
 
 func runWorker(
 	ctx context.Context,
-	ncl *trb_nats.Nats,
 	md *investgo.MarketDataServiceClient,
 	conn driver.Conn,
 	l zlog.Logger,
 	cfg config,
 ) error {
-	sub, err := wait.Until(ctx, l, "NATS consumer", func(ctx context.Context) (*nats.Subscription, error) {
-		return ncl.Jsc.PullSubscribe(cfg.subject, cfg.consumer, nats.BindStream(cfg.stream))
-	})
-	if err != nil {
-		return err
-	}
+	pgTable := postgres.ClickHouseTableExpr("hct_scheduler_target")
+	l.Info().Msg("воркер исторических свечей опрашивает hct_scheduler_target")
 
-	l.Info().
-		Str("stream", cfg.stream).
-		Str("subject", cfg.subject).
-		Str("consumer", cfg.consumer).
-		Msg("воркер исторических свечей слушает NATS")
+	idleWait := time.Duration(cfg.minUpdate) * time.Second
 
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
 
-		fetchCtx, cancel := context.WithTimeout(ctx, fetchWait)
-		msgs, err := sub.Fetch(1, nats.Context(fetchCtx))
-		cancel()
+		targets, err := investgo.SelectSchedulerTargets(ctx, conn, pgTable, 1, cfg.minUpdate)
 		if err != nil {
-			if ctx.Err() != nil {
+			l.Error().Err(err).Msg("ошибка выборки целей")
+			if !sleep(ctx, idleWait) {
 				return nil
 			}
-			if isIdleFetch(err) {
-				continue
+			continue
+		}
+		if len(targets) == 0 {
+			l.Info().Msg("нет целей с отставанием для догрузки")
+			if !sleep(ctx, idleWait) {
+				return nil
 			}
-			l.Error().Err(err).Msg("ошибка чтения задания из NATS")
 			continue
 		}
 
-		for _, msg := range msgs {
-			if err := handleLoadTask(ctx, md, conn, l, cfg.minUpdate, msg); err != nil {
-				if stop := rejectTask(ctx, msg, l, err); stop {
-					return nil
-				}
-				continue
+		target := targets[0]
+		l.Info().
+			Str("uid", target.Uid).
+			Int32("interval", target.Interval).
+			Time("start_time", target.StartTime).
+			Msg("получена цель догрузки")
+
+		err = processTarget(ctx, md, conn, l, target, cfg.minUpdate)
+		if errors.Is(err, investgo.ErrIntervalUpdate) {
+			if !sleep(ctx, idleWait) {
+				return nil
 			}
-			if err := msg.Ack(); err != nil {
-				l.Error().Err(err).Msg("не удалось подтвердить сообщение (ACK)")
+			continue
+		}
+		if isCanceledErr(err) || ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
+			if isUnavailableErr(err) {
+				l.Warn().Err(err).Msg("gRPC invest недоступен, повтор после паузы")
+			} else {
+				l.Error().
+					Err(err).
+					Str("uid", target.Uid).
+					Int32("interval", target.Interval).
+					Msg("ошибка догрузки инструмента")
 			}
+			if !sleep(ctx, idleWait) {
+				return nil
+			}
+			continue
 		}
 	}
 }
 
-// isIdleFetch — пустой pull: ждать было нечего. Это не отказ NATS.
-func isIdleFetch(err error) bool {
-	return errors.Is(err, nats.ErrTimeout) ||
-		errors.Is(err, context.DeadlineExceeded)
+func sleep(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		d = time.Second
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func isCanceledErr(err error) bool {
@@ -104,109 +109,33 @@ func isCanceledErr(err error) bool {
 	return false
 }
 
-// rejectTask решает, что делать с неуспешным заданием.
-// true — воркер должен остановиться (сообщение не ACK/NAK, вернётся по AckWait).
-func rejectTask(ctx context.Context, msg *nats.Msg, l zlog.Logger, err error) bool {
-	if ctx.Err() != nil {
-		l.Info().Err(err).Str("subject", msg.Subject).Msg("воркер останавливается, задание останется в очереди")
-		return true
-	}
-	if errors.Is(err, hctpkg.ErrPermanent) {
-		if termErr := msg.Term(); termErr != nil {
-			l.Error().Err(termErr).Msg("не удалось снять некорректное сообщение (TERM)")
-		}
-		l.Error().Err(err).Str("subject", msg.Subject).Msg("задание отклонено без повтора")
-		return false
-	}
-	if nakErr := msg.NakWithDelay(nakDelay); nakErr != nil {
-		l.Error().Err(nakErr).Msg("не удалось отправить NAK")
-	}
-	if isCanceledErr(err) {
-		l.Warn().Err(err).Str("subject", msg.Subject).Msg("обработка прервана, повтор с задержкой")
-		return false
-	}
-	l.Error().Err(err).Str("subject", msg.Subject).Msg("ошибка обработки задания, будет повтор")
-	return false
+func isUnavailableErr(err error) bool {
+	return status.Code(err) == codes.Unavailable
 }
 
-func handleLoadTask(
+func processTarget(
 	ctx context.Context,
 	md *investgo.MarketDataServiceClient,
 	conn driver.Conn,
 	l zlog.Logger,
-	minUpdate float64,
-	msg *nats.Msg,
-) error {
-	task := &format_schemas.HistoricCandleLoadTask{}
-	if len(msg.Data) > 0 {
-		if err := unmarshalTaskPayload(msg.Data, task); err != nil {
-			l.Warn().Err(err).Str("subject", msg.Subject).Msg("тело задания не разобрано, uid и interval берём из subject")
-			task = &format_schemas.HistoricCandleLoadTask{}
-		}
-	}
-
-	uid, interval, err := hctpkg.ResolveTask(msg.Subject, task)
-	if err != nil {
-		return err
-	}
-
-	l.Info().
-		Str("subject", msg.Subject).
-		Str("uid", uid).
-		Str("interval", interval.String()).
-		Msg("получено задание догрузки исторических свечей")
-
-	return processInstrument(ctx, md, conn, l, interval, uid, minUpdate)
-}
-
-func unmarshalTaskPayload(data []byte, task *format_schemas.HistoricCandleLoadTask) error {
-	if err := proto.Unmarshal(data, task); err == nil {
-		return nil
-	}
-	_, n := binary.Uvarint(data)
-	if n > 0 && n < len(data) {
-		return proto.Unmarshal(data[n:], task)
-	}
-	return proto.Unmarshal(data, task)
-}
-
-func processInstrument(
-	ctx context.Context,
-	md *investgo.MarketDataServiceClient,
-	conn driver.Conn,
-	l zlog.Logger,
-	interval pb.CandleInterval,
-	uid string,
+	target investgo.ShareData,
 	minUpdate float64,
 ) error {
-	lastHC, err := investgo.GetLastHC(ctx, conn, interval, uid)
-	if err != nil {
-		return err
-	}
-	if len(lastHC) == 0 {
-		l.Warn().
-			Str("uid", uid).
-			Str("interval", interval.String()).
-			Msg("инструмент не найден в sht, пропуск")
-		return nil
-	}
-
-	data := lastHC[0]
-	err = data.Processing(ctx, md, conn, minUpdate)
+	err := target.Processing(ctx, md, conn, minUpdate)
 	if err != nil {
 		if errors.Is(err, investgo.ErrIntervalUpdate) {
-			l.Warn().Err(err).
-				Str("uid", data.Uid).
-				Str("interval", interval.String()).
-				Msg("обновление интервала слишком рано, инструмент пропущен")
-			return nil
+			l.Warn().
+				Str("uid", target.Uid).
+				Int32("interval", target.Interval).
+				Msg("отставание меньше INTERVAL_UPDATE_HC, догрузка приостановлена")
+			return err
 		}
 		return err
 	}
 
 	l.Info().
-		Str("uid", data.Uid).
-		Str("interval", interval.String()).
-		Msg("инструмент успешно загружен")
+		Str("uid", target.Uid).
+		Int32("interval", target.Interval).
+		Msg("окно успешно загружено")
 	return nil
 }

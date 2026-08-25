@@ -261,7 +261,7 @@ func configFromEnv() config {
 		prefix = "TrB.HistoricCandle.Task"
 	}
 
-	tickSec := envInt("HCT_ORCH_TICK_SEC", 60)
+	tickSec := envInt("HCT_ORCH_TICK_SEC", 5)
 	minLagSec := envInt("HCT_ORCH_MIN_LAG_SEC", 60)
 	maxPerTick := envInt("HCT_ORCH_MAX_PER_TICK", 100)
 	intervalNum := envInt("HCT_ORCH_INTERVAL", int(pb.CandleInterval_CANDLE_INTERVAL_1_MIN))

@@ -1,14 +1,7 @@
 // Package app — воркер догрузки исторических свечей.
 //
-// Сервис принимает задания исключительно из JetStream-стрима historic_candle.
-// Каждое задание живёт на отдельном subject вида:
-//
-//	TrB.HistoricCandle.Task.{uid}.{interval}
-//
-// В стриме на один такой subject может быть не больше одного сообщения
-// (см. maxmsgspersubject: 1 и discardnewpersubject в configs/nats-server/streams.yaml).
-// Пока сообщение не подтверждено ACK, повторная публикация в тот же subject отклоняется.
-// После ACK слот освобождается, и планировщик может поставить новое задание.
+// Сервис непрерывно выбирает включённые цели из hct_scheduler_target
+// (через ClickHouse postgresql()) и догружает свечи через gRPC-сервис invest.
 package app
 
 import (
@@ -19,25 +12,18 @@ import (
 	"syscall"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	trb_nats "github.com/Mar1eena/TrB_V3/internal/pkg/brokers/nats"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/env"
+	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/investgo"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
+	"google.golang.org/grpc"
 )
 
-const (
-	defaultSubject   = "TrB.HistoricCandle.Task.*.*"
-	defaultConsumer  = "historic_candle_cons"
-	defaultStream    = "historic_candle"
-	defaultMinUpdate = 60.0
-)
+const defaultMinUpdate = 60.0
 
 type config struct {
-	stream    string
-	subject   string
-	consumer  string
 	minUpdate float64
 }
 
@@ -52,16 +38,15 @@ func App() {
 	defer stop()
 
 	var (
-		investClient *investgo.Client
-		conn         driver.Conn
-		natsClient   *trb_nats.Nats
+		investConn *grpc.ClientConn
+		conn       driver.Conn
 	)
 	defer func() {
-		if investClient != nil {
-			if err := investClient.Conn.Close(); err != nil {
-				l.Error().Err(err).Msg("ошибка остановки клиента invest")
+		if investConn != nil {
+			if err := investConn.Close(); err != nil {
+				l.Error().Err(err).Msg("ошибка закрытия соединения с invest")
 			} else {
-				l.Info().Msg("клиент invest остановлен")
+				l.Info().Msg("соединение с invest закрыто")
 			}
 		}
 		if conn != nil {
@@ -71,32 +56,29 @@ func App() {
 				l.Info().Msg("соединение с ClickHouse закрыто")
 			}
 		}
-		if natsClient != nil {
-			natsClient.C.Close()
-			l.Info().Msg("отключение от NATS")
-		}
 	}()
 
 	g := wait.NewGroup(ctx, l)
-	investSlot := wait.Go(g, "invest", func(ctx context.Context) (*investgo.Client, error) {
-		return investgo.NewClient(ctx, investgo.LoadEnvConfig(), l)
+	investSlot := wait.Go(g, "invest", func(ctx context.Context) (*grpc.ClientConn, error) {
+		addr, err := investAPIAddr()
+		if err != nil {
+			return nil, err
+		}
+		l.Info().Str("addr", addr).Msg("подключение к gRPC invest")
+		return grpcx.DialInsecureWithLogger(addr, l)
 	})
 	chSlot := wait.Go(g, "ClickHouse", func(ctx context.Context) (driver.Conn, error) {
 		return clickhouse.Connect(ctx, clickhouse.ClickHouse_config())
-	})
-	natsSlot := wait.Go(g, "NATS", func(ctx context.Context) (*trb_nats.Nats, error) {
-		return trb_nats.NewNatsClient(ctx, trb_nats.Nats_config(), l)
 	})
 	if err := g.Wait(); err != nil {
 		l.Info().Err(err).Msg("сервис остановлен до подключения к зависимостям")
 		return
 	}
-	investClient = investSlot.Get()
+	investConn = investSlot.Get()
 	conn = chSlot.Get()
-	natsClient = natsSlot.Get()
 
-	md := investClient.NewMarketDataServiceClient()
-	if err := runWorker(ctx, natsClient, md, conn, l, cfg); err != nil && !errors.Is(err, context.Canceled) {
+	md := investgo.NewMarketDataClient(ctx, investConn, l)
+	if err := runWorker(ctx, md, conn, l, cfg); err != nil && !errors.Is(err, context.Canceled) {
 		l.Error().Err(err).Msg("сервис остановлен с ошибкой")
 		return
 	}
@@ -105,18 +87,8 @@ func App() {
 
 func configFromEnv() config {
 	return config{
-		stream:    envOr("HCT_NATS_STREAM", defaultStream),
-		subject:   envOr("HCT_NATS_SUBJECT", defaultSubject),
-		consumer:  envOr("HCT_NATS_CONSUMER", defaultConsumer),
 		minUpdate: envFloat("INTERVAL_UPDATE_HC", defaultMinUpdate),
 	}
-}
-
-func envOr(key, fallback string) string {
-	if v := env.Get(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func envFloat(key string, fallback float64) float64 {
@@ -129,4 +101,12 @@ func envFloat(key string, fallback float64) float64 {
 		return fallback
 	}
 	return float64(n)
+}
+
+func investAPIAddr() (string, error) {
+	addr := env.Addr("INVEST_API_URL", "INVEST_API_URL_DOCKER")
+	if addr == "" {
+		return "", errors.New("INVEST_API_URL не задан")
+	}
+	return addr, nil
 }

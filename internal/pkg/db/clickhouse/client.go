@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -43,7 +44,7 @@ func Connect(ctx context.Context, Config Config) (driver.Conn, error) {
 		ConnMaxLifetime:  10 * time.Minute,
 		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
 		DialTimeout:      10 * time.Second,
-		ReadTimeout:      60 * time.Second,
+		ReadTimeout:      readTimeoutFromEnv(),
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,
 		},
@@ -68,6 +69,19 @@ func Connect(ctx context.Context, Config Config) (driver.Conn, error) {
 		return nil, err
 	}
 	return wrapQueryLog(conn, zlog.New(), Config), nil
+}
+
+func readTimeoutFromEnv() time.Duration {
+	const defaultSec = 300
+	raw := env.Get("CLICKHOUSE_READ_TIMEOUT_SEC")
+	if raw == "" {
+		return defaultSec * time.Second
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultSec * time.Second
+	}
+	return time.Duration(n) * time.Second
 }
 
 func ClickHouse_config() Config {

@@ -1,0 +1,11 @@
+<clickhouse>
+    <named_collections>
+        <trb>
+            <host>postgre-db</host>
+            <port>5432</port>
+            <database>trb</database>
+            <user>postgres</user>
+            <password>1234</password>
+        </trb>
+    </named_collections>
+</clickhouse>
