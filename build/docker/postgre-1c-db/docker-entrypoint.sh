@@ -242,13 +242,19 @@ if [ "$1" = 'postgres' ]; then
 			auto_explain.log_min_duration \
 			auto_explain.log_analyze \
 			auto_explain.log_buffers \
+			auto_explain.log_wal \
 			auto_explain.log_timing \
 			auto_explain.log_nested_statements \
 			auto_explain.log_verbose \
 			auto_explain.log_triggers \
+			auto_explain.log_settings \
+			auto_explain.log_format \
 			auto_explain.sample_rate \
 			log_statement \
 			log_min_duration_statement \
+			log_duration \
+			log_parameter_max_length \
+			log_parameter_max_length_on_error \
 			shared_preload_libraries
 		do
 			"${psql[@]}" -c "ALTER SYSTEM RESET ${param};" >/dev/null 2>&1 || true

@@ -497,6 +497,9 @@ services:
     command: ["--config", "/etc/vector/postgres.yaml"]
     environment:
       TZ: ${SYSTEM_TIMEZONE:-Europe/Moscow}
+      CLICKHOUSE_PG_ENDPOINT: http://clickhouse-pg:8123
+      CLICKHOUSE_PG_USERNAME: ${CLICKHOUSE_PG_USERNAME:-default}
+      CLICKHOUSE_PG_PASSWORD: ${CLICKHOUSE_PG_PASSWORD:-default}
     volumes:
       - ./configs/vector/postgres.yaml:/etc/vector/postgres.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro

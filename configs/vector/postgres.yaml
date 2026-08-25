@@ -1,8 +1,11 @@
-# Логи работы PostgreSQL → OTLP → clickhouse-pg (:4318) → default.otel_* → HyperDX :8082
+# PostgreSQL logs:
+#   jsonlog (postgre-1c-db) + docker stderr → OTLP → default.otel_logs → HyperDX :8082
+#   same events, typed → postgres.logs / query_plans / errors in ClickHouse
 #
-# Источники:
-#   postgre-1c-db — jsonlog в /var/log/postgresql-1c
-#   postgre-db    — docker json-file (stderr)
+# HyperDX attributes observed in otel_logs.LogAttributes:
+#   pid, error_severity, backend_type, remote_host, dbname, user, command_tag,
+#   query_id, duration_ms, event=auto_explain, query_plan, detail, context,
+#   application_name, pg_message, state_code, hint
 
 data_dir: /var/lib/vector
 
@@ -31,79 +34,237 @@ transforms:
     condition: |
       includes(["postgre-db", "postgre-1c-db"], string(.label."com.docker.compose.service") ?? "")
 
-  postgres_1c_to_otlp:
+  # Flatten PG jsonlog into typed fields (shared by OTLP + ClickHouse).
+  postgres_1c_parsed:
     type: remap
     inputs: [postgres_1c_json]
     source: |
       raw = string(.message) ?? ""
+      ts = .timestamp
       service = "postgre-1c-db"
-      severity_text = "INFO"
+      severity = "INFO"
       severity_number = 9
+      severity_pg = "LOG"
+      user = ""
+      dbname = ""
+      pid = 0
+      application_name = ""
+      backend_type = ""
+      sql_state = ""
+      detail = ""
+      hint = ""
+      query_id = ""
+      remote_host = ""
+      command_tag = ""
+      internal_query = ""
+      context = ""
+      statement = ""
+      msg = raw
       body = raw
-      log_attrs = [
-        {"key": "db.system", "value": {"stringValue": "postgresql"}},
-        {"key": "com.docker.compose.service", "value": {"stringValue": service}}
-      ]
+      duration_ms = null
+      event = ""
+      query_plan = ""
+      plan_node = ""
+      sql_text = ""
 
       if is_json(raw) {
         j = parse_json!(raw)
-        sev = upcase(string(j.error_severity) ?? "LOG")
-        stmt = string(j.statement) ?? ""
+        severity_pg = upcase(string(j.error_severity) ?? "LOG")
+        statement = string(j.statement) ?? ""
         msg = string(j.message) ?? raw
-        body = if stmt != "" { stmt } else { msg }
+        internal_query = string(j.internal_query) ?? ""
+        user = string(j.user) ?? ""
+        dbname = string(j.dbname) ?? ""
+        pid = to_int(j.pid) ?? 0
+        application_name = string(j.application_name) ?? ""
+        backend_type = string(j.backend_type) ?? ""
+        sql_state = string(j.state_code) ?? ""
+        detail = string(j.detail) ?? ""
+        hint = string(j.hint) ?? ""
+        query_id = to_string(j.query_id) ?? ""
+        remote_host = string(j.remote_host) ?? ""
+        command_tag = string(j.ps) ?? ""
+        context = string(j.context) ?? ""
+        body = if statement != "" { statement } else { msg }
+        sql_text = statement
 
-        if sev == "PANIC" {
-          severity_text = "FATAL"
+        if severity_pg == "PANIC" || severity_pg == "FATAL" {
+          severity = "FATAL"
           severity_number = 21
-        } else if sev == "FATAL" {
-          severity_text = "FATAL"
-          severity_number = 21
-        } else if sev == "ERROR" {
-          severity_text = "ERROR"
+        } else if severity_pg == "ERROR" {
+          severity = "ERROR"
           severity_number = 17
-        } else if sev == "WARNING" {
-          severity_text = "WARN"
+        } else if severity_pg == "WARNING" {
+          severity = "WARN"
           severity_number = 13
-        } else if sev == "NOTICE" || sev == "LOG" || sev == "INFO" {
-          severity_text = "INFO"
+        } else if severity_pg == "NOTICE" || severity_pg == "LOG" || severity_pg == "INFO" {
+          severity = "INFO"
           severity_number = 9
-        } else if sev == "DEBUG" || starts_with(sev, "DEBUG") {
-          severity_text = "DEBUG"
+        } else if severity_pg == "DEBUG" || starts_with(severity_pg, "DEBUG") {
+          severity = "DEBUG"
           severity_number = 5
         }
 
-        fields = {
-          "user": string(j.user) ?? "",
-          "dbname": string(j.dbname) ?? "",
-          "pid": to_string(j.pid) ?? "",
-          "application_name": string(j.application_name) ?? "",
-          "backend_type": string(j.backend_type) ?? "",
-          "state_code": string(j.state_code) ?? "",
-          "error_severity": sev,
-          "detail": string(j.detail) ?? "",
-          "hint": string(j.hint) ?? "",
-          "query_id": to_string(j.query_id) ?? "",
-          "remote_host": string(j.remote_host) ?? "",
-          "command_tag": string(j.ps) ?? ""
-        }
-        for_each(fields) -> |k, v| {
-          if v != "" && v != "0" {
-            log_attrs = push(log_attrs, {"key": k, "value": {"stringValue": v}})
+        plan = parse_regex(msg, r'(?s)plan:\s*(?P<plan>.+)$') ?? {}
+        query_plan = string(plan.plan) ?? ""
+        if query_plan != "" {
+          event = "auto_explain"
+          pj, perr = parse_json(query_plan)
+          if perr == null {
+            qt = string(pj."Query Text") ?? ""
+            if qt != "" {
+              sql_text = qt
+              body = qt
+            }
+            plan_node = string(pj.Plan."Node Type") ?? ""
+            qid = to_string(pj."Query Identifier") ?? ""
+            if query_id == "" || query_id == "0" {
+              query_id = qid
+            }
           }
         }
 
-        dur = parse_regex(msg, r'duration:\s*(?P<ms>[0-9.]+)\s*ms') ?? {}
+        if sql_text == "" {
+          extracted = parse_regex(msg, r'(?i)(?:parse|bind|execute)\s+<[^>]+>:\s*(?P<sql>.+)$') ?? {}
+          sql_text = string(extracted.sql) ?? ""
+          if sql_text != "" {
+            body = sql_text
+          }
+        }
+
+        dur = parse_regex(msg, r'(?i)(?:duration|продолжительность):\s*(?P<ms>[0-9.]+)\s*(?:ms|мс)') ?? {}
         dms = string(dur.ms) ?? ""
         if dms != "" {
-          log_attrs = push(log_attrs, {"key": "duration_ms", "value": {"stringValue": dms}})
+          duration_ms = to_float(dms) ?? null
         }
       }
 
+      . = {
+        "timestamp": ts,
+        "service": service,
+        "source": "jsonlog",
+        "severity": severity,
+        "severity_number": severity_number,
+        "severity_pg": severity_pg,
+        "user": user,
+        "dbname": dbname,
+        "pid": pid,
+        "application_name": application_name,
+        "backend_type": backend_type,
+        "sql_state": sql_state,
+        "detail": detail,
+        "hint": hint,
+        "query_id": query_id,
+        "remote_host": remote_host,
+        "command_tag": command_tag,
+        "internal_query": internal_query,
+        "context": context,
+        "message": msg,
+        "body": body,
+        "sql_text": sql_text,
+        "duration_ms": duration_ms,
+        "event": event,
+        "query_plan": query_plan,
+        "plan_node": plan_node
+      }
+
+  postgres_docker_parsed:
+    type: remap
+    inputs: [postgres_docker]
+    source: |
+      raw_msg = string(.message) ?? ""
+      service = string(.label."com.docker.compose.service") ?? string(.container_name) ?? "postgres"
+      severity = "INFO"
+      severity_number = 9
+      if match(raw_msg, r'(?i)\b(panic|fatal)\b') {
+        severity = "FATAL"
+        severity_number = 21
+      } else if match(raw_msg, r'(?i)\berror\b') {
+        severity = "ERROR"
+        severity_number = 17
+      } else if match(raw_msg, r'(?i)\bwarning\b') {
+        severity = "WARN"
+        severity_number = 13
+      } else if match(raw_msg, r'(?i)\bdebug\b') {
+        severity = "DEBUG"
+        severity_number = 5
+      }
+      . = {
+        "timestamp": .timestamp,
+        "service": service,
+        "source": "docker",
+        "severity": severity,
+        "severity_number": severity_number,
+        "severity_pg": "",
+        "user": "",
+        "dbname": "",
+        "pid": 0,
+        "application_name": "",
+        "backend_type": "",
+        "sql_state": "",
+        "detail": "",
+        "hint": "",
+        "query_id": "",
+        "remote_host": "",
+        "command_tag": "",
+        "internal_query": "",
+        "context": "",
+        "message": raw_msg,
+        "body": raw_msg,
+        "sql_text": "",
+        "duration_ms": null,
+        "event": "",
+        "query_plan": "",
+        "plan_node": ""
+      }
+
+  postgres_1c_to_otlp:
+    type: remap
+    inputs: [postgres_1c_parsed]
+    source: |
       ts_ns, ts_err = to_unix_timestamp(.timestamp, unit: "nanoseconds")
       if ts_err != null {
         ts_ns = to_unix_timestamp!(now(), unit: "nanoseconds")
       }
-
+      log_attrs = [
+        {"key": "db.system", "value": {"stringValue": "postgresql"}},
+        {"key": "com.docker.compose.service", "value": {"stringValue": .service}}
+      ]
+      fields = {
+        "user": .user,
+        "dbname": .dbname,
+        "pid": to_string(.pid) ?? "",
+        "application_name": .application_name,
+        "backend_type": .backend_type,
+        "state_code": .sql_state,
+        "error_severity": .severity_pg,
+        "detail": .detail,
+        "hint": .hint,
+        "query_id": .query_id,
+        "remote_host": .remote_host,
+        "command_tag": .command_tag,
+        "internal_query": .internal_query,
+        "context": .context
+      }
+      for_each(fields) -> |k, v| {
+        if v != "" && v != "0" {
+          log_attrs = push(log_attrs, {"key": k, "value": {"stringValue": v}})
+        }
+      }
+      if .sql_text != "" && .message != "" && .message != .sql_text {
+        log_attrs = push(log_attrs, {"key": "pg_message", "value": {"stringValue": .message}})
+      }
+      if .query_plan != "" {
+        log_attrs = push(log_attrs, {"key": "query_plan", "value": {"stringValue": .query_plan}})
+        log_attrs = push(log_attrs, {"key": "event", "value": {"stringValue": "auto_explain"}})
+      }
+      if .duration_ms != null {
+        log_attrs = push(log_attrs, {"key": "duration_ms", "value": {"stringValue": to_string!(.duration_ms)}})
+      }
+      service = .service
+      severity_text = .severity
+      severity_number = .severity_number
+      body = .body
       . = {
         "resourceLogs": [{
           "resource": {
@@ -130,37 +291,21 @@ transforms:
 
   postgres_docker_to_otlp:
     type: remap
-    inputs: [postgres_docker]
+    inputs: [postgres_docker_parsed]
     source: |
-      raw_msg = string(.message) ?? ""
-      service = string(.label."com.docker.compose.service") ?? string(.container_name) ?? "postgres"
-      container = string(.container_name) ?? ""
-      body = raw_msg
-      severity_text = "INFO"
-      severity_number = 9
-
-      if match(raw_msg, r'(?i)\b(panic|fatal)\b') {
-        severity_text = "FATAL"
-        severity_number = 21
-      } else if match(raw_msg, r'(?i)\berror\b') {
-        severity_text = "ERROR"
-        severity_number = 17
-      } else if match(raw_msg, r'(?i)\bwarning\b') {
-        severity_text = "WARN"
-        severity_number = 13
-      } else if match(raw_msg, r'(?i)\bdebug\b') {
-        severity_text = "DEBUG"
-        severity_number = 5
+      ts_ns, ts_err = to_unix_timestamp(.timestamp, unit: "nanoseconds")
+      if ts_err != null {
+        ts_ns = to_unix_timestamp!(now(), unit: "nanoseconds")
       }
-
-      ts_ns = to_unix_timestamp!(.timestamp, unit: "nanoseconds")
-
+      service = .service
+      severity_text = .severity
+      severity_number = .severity_number
+      body = .body
       . = {
         "resourceLogs": [{
           "resource": {
             "attributes": [
               {"key": "service.name", "value": {"stringValue": service}},
-              {"key": "container.name", "value": {"stringValue": container}},
               {"key": "deployment.environment", "value": {"stringValue": "docker"}}
             ]
           },
@@ -183,6 +328,94 @@ transforms:
         }]
       }
 
+  postgres_ch_row:
+    type: remap
+    inputs: [postgres_1c_parsed, postgres_docker_parsed]
+    source: |
+      . = {
+        "timestamp": .timestamp,
+        "service": .service,
+        "source": .source,
+        "severity": .severity,
+        "severity_pg": .severity_pg,
+        "user": .user,
+        "dbname": .dbname,
+        "pid": .pid,
+        "application_name": .application_name,
+        "backend_type": .backend_type,
+        "remote_host": .remote_host,
+        "command_tag": .command_tag,
+        "query_id": .query_id,
+        "sql_state": .sql_state,
+        "sql_text": .sql_text,
+        "message": .message,
+        "duration_ms": .duration_ms,
+        "event": .event,
+        "query_plan": .query_plan,
+        "plan_node": .plan_node,
+        "detail": .detail,
+        "hint": .hint,
+        "context": .context
+      }
+
+  postgres_plans:
+    type: filter
+    inputs: [postgres_ch_row]
+    condition: '.event == "auto_explain" && .query_plan != ""'
+
+  postgres_plan_row:
+    type: remap
+    inputs: [postgres_plans]
+    source: |
+      duration_ms = 0.0
+      if is_float(.duration_ms) {
+        duration_ms = .duration_ms
+      }
+      . = {
+        "timestamp": .timestamp,
+        "service": .service,
+        "user": .user,
+        "dbname": .dbname,
+        "pid": .pid,
+        "application_name": .application_name,
+        "command_tag": .command_tag,
+        "query_id": .query_id,
+        "sql_text": .sql_text,
+        "duration_ms": duration_ms,
+        "plan_node": .plan_node,
+        "query_plan": .query_plan
+      }
+
+  postgres_errors:
+    type: filter
+    inputs: [postgres_ch_row]
+    condition: |
+      includes(["ERROR", "FATAL", "WARN"], .severity) || includes(["ERROR", "FATAL", "WARNING", "PANIC"], .severity_pg)
+
+  postgres_error_row:
+    type: remap
+    inputs: [postgres_errors]
+    source: |
+      . = {
+        "timestamp": .timestamp,
+        "service": .service,
+        "source": .source,
+        "severity": .severity,
+        "severity_pg": .severity_pg,
+        "user": .user,
+        "dbname": .dbname,
+        "pid": .pid,
+        "application_name": .application_name,
+        "command_tag": .command_tag,
+        "query_id": .query_id,
+        "sql_state": .sql_state,
+        "sql_text": .sql_text,
+        "message": .message,
+        "detail": .detail,
+        "hint": .hint,
+        "context": .context
+      }
+
 sinks:
   clickhouse_pg_otlp:
     type: opentelemetry
@@ -196,3 +429,54 @@ sinks:
       batch:
         max_events: 100
         timeout_secs: 5
+
+  clickhouse_pg_logs:
+    type: clickhouse
+    inputs: [postgres_ch_row]
+    endpoint: ${CLICKHOUSE_PG_ENDPOINT}
+    database: postgres
+    table: logs
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    compression: gzip
+    auth:
+      strategy: basic
+      user: ${CLICKHOUSE_PG_USERNAME}
+      password: ${CLICKHOUSE_PG_PASSWORD}
+    batch:
+      max_events: 200
+      timeout_secs: 5
+
+  clickhouse_pg_plans:
+    type: clickhouse
+    inputs: [postgres_plan_row]
+    endpoint: ${CLICKHOUSE_PG_ENDPOINT}
+    database: postgres
+    table: query_plans
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    compression: gzip
+    auth:
+      strategy: basic
+      user: ${CLICKHOUSE_PG_USERNAME}
+      password: ${CLICKHOUSE_PG_PASSWORD}
+    batch:
+      max_events: 100
+      timeout_secs: 5
+
+  clickhouse_pg_errors:
+    type: clickhouse
+    inputs: [postgres_error_row]
+    endpoint: ${CLICKHOUSE_PG_ENDPOINT}
+    database: postgres
+    table: errors
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    compression: gzip
+    auth:
+      strategy: basic
+      user: ${CLICKHOUSE_PG_USERNAME}
+      password: ${CLICKHOUSE_PG_PASSWORD}
+    batch:
+      max_events: 50
+      timeout_secs: 5
