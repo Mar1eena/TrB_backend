@@ -15,15 +15,32 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY internal/ internal/
 COPY configs/ configs/
 
+# Alpine CDN (dl-cdn.alpinelinux.org) часто даёт Connection refused (IPv6 / блокировки).
+# Зеркала можно переопределить: docker compose build --build-arg ALPINE_MIRROR=https://...
+ARG ALPINE_MIRROR=https://mirror.yandex.ru/mirrors/alpine
+
 # Сертификаты НУЦ Минцифры в системный trust store (нужны для T-Invest / российских API)
-RUN apk add --no-cache ca-certificates && \
-    mkdir -p /usr/local/share/ca-certificates/russian-trusted && \
+RUN set -eux; \
+    . /etc/os-release; \
+    ver="v${VERSION_ID%.*}"; \
+    ok=0; \
+    for base in \
+      "${ALPINE_MIRROR}" \
+      "https://mirror.yandex.ru/mirrors/alpine" \
+      "https://mirrors.edge.kernel.org/alpine" \
+      "https://dl-cdn.alpinelinux.org/alpine"; do \
+      printf '%s\n' "${base}/${ver}/main" "${base}/${ver}/community" > /etc/apk/repositories; \
+      if apk update; then ok=1; break; fi; \
+    done; \
+    test "$ok" -eq 1; \
+    apk add --no-cache ca-certificates; \
+    mkdir -p /usr/local/share/ca-certificates/russian-trusted; \
     find configs/CA -type f \( -name '*.crt' -o -name '*.pem' -o -name '*.cer' \) | while read -r f; do \
       if grep -q "BEGIN CERTIFICATE" "$f"; then \
         base=$(basename "$f"); \
         cp "$f" "/usr/local/share/ca-certificates/russian-trusted/${base%.*}.crt"; \
       fi; \
-    done && \
+    done; \
     update-ca-certificates
 
 # Статический бинарник без отладочной информации
