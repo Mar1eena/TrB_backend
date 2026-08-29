@@ -59,7 +59,9 @@ x-services-config: &services-config
     resources:
       limits:
         cpus: '1'
-        memory: 256M
+        memory: 128M
+      reservations:
+        memory: 64M
   command: ["/app/service"]
   volumes:
     - ./.env:/app/.env
@@ -149,7 +151,9 @@ services:
       resources:
         limits:
           cpus: '1'
-          memory: 512M
+          memory: 256M
+        reservations:
+          memory: 64M
 
   clickhouse:
     <<: [*services-config]
@@ -196,6 +200,8 @@ services:
         limits:
           cpus: '0.25'
           memory: 128M
+        reservations:
+          memory: 48M
     networks:
       - TrB_Network
   #################################################################
@@ -226,6 +232,7 @@ services:
       - hyperdx_data:/data/db                # MongoDB HyperDX: дашборды, alerts, saved searches
       - ./volumes/clickhouse/log:/var/log
       - ./configs/clickhouse/config.d/config.xml:/etc/clickhouse-server/config.d/config.xml:ro
+      - ./configs/clickhouse/config.d/memory.xml:/etc/clickhouse-server/config.d/memory.xml:ro
       - ./configs/clickhouse/config.d/named-collection-trb.xml:/etc/clickhouse-server/config.d/named-collection-trb.xml:ro
       - ./configs/clickhouse/users.d/zz-admin-default.xml:/etc/clickhouse-server/users.d/zz-admin-default.xml:ro
       - ./configs/clickhouse/format_schemas:/etc/clickhouse-server/format_schemas
@@ -259,7 +266,9 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: '8G'
+          memory: 10G
+        reservations:
+          memory: 6G
 
   # https://github.com/ClickHouse/mcp-clickhouse
   # HTTP MCP: http://127.0.0.1:8000/mcp  health: http://127.0.0.1:8000/health
@@ -307,6 +316,8 @@ services:
         limits:
           cpus: "0.5"
           memory: 512M
+        reservations:
+          memory: 128M
 
   postgre-db:
     image: postgres:16-alpine
@@ -320,6 +331,14 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-trb}
     command:
       - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=768MB"
+      - "-c"
+      - "work_mem=4MB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
       - "-c"
       - "log_min_duration_statement=200"
       - "-c"
@@ -354,6 +373,8 @@ services:
         limits:
           cpus: "0.5"
           memory: 1G
+        reservations:
+          memory: 256M
   
   postgre-1c-db:
     image: postgre-1c-db:latest
@@ -371,11 +392,11 @@ services:
       - "-c"
       - "shared_buffers=1GB"
       - "-c"
-      - "effective_cache_size=4GB"
+      - "effective_cache_size=3GB"
       - "-c"
       - "work_mem=16MB"
       - "-c"
-      - "maintenance_work_mem=512MB"
+      - "maintenance_work_mem=256MB"
       - "-c"
       - "random_page_cost=1.1"
       - "-c"
@@ -411,11 +432,14 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    shm_size: 256mb
     deploy:
       resources:
         limits:
           cpus: '1'
           memory: 4G
+        reservations:
+          memory: 2G
     networks:
       TrB_Network:
 
@@ -443,6 +467,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          memory: 64M
 
   #####################################################################################
 
@@ -469,6 +500,7 @@ services:
       - clickhouse_pg_data:/var/lib/clickhouse
       - hyperdx_pg_data:/data/db
       - ./volumes/clickhouse-pg/log:/var/log
+      - ./configs/clickhouse-pg/config.d/memory.xml:/etc/clickhouse-server/config.d/memory.xml:ro
       - ./configs/clickhouse/hyperdx/clickhouseProxy.js:/app/packages/api/build/routers/api/clickhouseProxy.js:ro
       - ./configs/clickhouse/hyperdx/auth.js:/app/packages/api/build/middleware/auth.js:ro
       - ./configs/clickhouse/hyperdx/entry.sh:/etc/local/entry.sh:ro
@@ -494,7 +526,9 @@ services:
       resources:
         limits:
           cpus: "2"
-          memory: 4G
+          memory: 5G
+        reservations:
+          memory: 3G
 
   vector-pg:
     image: timberio/vector:0.51.1-alpine
@@ -530,6 +564,8 @@ services:
         limits:
           cpus: "0.5"
           memory: 512M
+        reservations:
+          memory: 128M
 
   # Логи сервисов: Vector (docker logs) → OTLP :4318 → ClickStack collector → otel_* → HyperDX
   vector:
@@ -551,6 +587,13 @@ services:
         condition: service_healthy
     networks:
       TrB_Network:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+        reservations:
+          memory: 64M
 ###############################################################################
 volumes:
   clickhouse_data:
