@@ -1,5 +1,5 @@
 # PostgreSQL logs:
-#   jsonlog (postgre-1c-db) + docker stderr → OTLP → default.otel_logs → HyperDX :8082
+#   jsonlog (postgre-1c-db) → OTLP → default.otel_logs → HyperDX :8080
 #   same events, typed → postgres.logs / query_plans / errors in ClickHouse
 #
 # HyperDX attributes observed in otel_logs.LogAttributes:
@@ -7,33 +7,16 @@
 #   query_id, duration_ms, event=auto_explain, query_plan, detail, context,
 #   application_name, pg_message, state_code, hint
 
-data_dir: /var/lib/vector
-
-api:
-  enabled: true
-  address: 0.0.0.0:8686
-
 sources:
   postgres_1c_json:
     type: file
     include:
       - /var/log/postgresql-1c/*.json
       - /var/log/postgresql-1c/*.log.json
-    read_from: beginning
+    read_from: end
     glob_minimum_cooldown_ms: 2000
 
-  docker_logs:
-    type: docker_logs
-    include_labels:
-      - "com.docker.compose.project=trb"
-
 transforms:
-  postgres_docker:
-    type: filter
-    inputs: [docker_logs]
-    condition: |
-      includes(["postgre-db", "postgre-1c-db"], string(.label."com.docker.compose.service") ?? "")
-
   # Flatten PG jsonlog into typed fields (shared by OTLP + ClickHouse).
   postgres_1c_parsed:
     type: remap
@@ -168,56 +151,6 @@ transforms:
         "plan_node": plan_node
       }
 
-  postgres_docker_parsed:
-    type: remap
-    inputs: [postgres_docker]
-    source: |
-      raw_msg = string(.message) ?? ""
-      service = string(.label."com.docker.compose.service") ?? string(.container_name) ?? "postgres"
-      severity = "INFO"
-      severity_number = 9
-      if match(raw_msg, r'(?i)\b(panic|fatal)\b') {
-        severity = "FATAL"
-        severity_number = 21
-      } else if match(raw_msg, r'(?i)\berror\b') {
-        severity = "ERROR"
-        severity_number = 17
-      } else if match(raw_msg, r'(?i)\bwarning\b') {
-        severity = "WARN"
-        severity_number = 13
-      } else if match(raw_msg, r'(?i)\bdebug\b') {
-        severity = "DEBUG"
-        severity_number = 5
-      }
-      . = {
-        "timestamp": .timestamp,
-        "service": service,
-        "source": "docker",
-        "severity": severity,
-        "severity_number": severity_number,
-        "severity_pg": "",
-        "user": "",
-        "dbname": "",
-        "pid": 0,
-        "application_name": "",
-        "backend_type": "",
-        "sql_state": "",
-        "detail": "",
-        "hint": "",
-        "query_id": "",
-        "remote_host": "",
-        "command_tag": "",
-        "internal_query": "",
-        "context": "",
-        "message": raw_msg,
-        "body": raw_msg,
-        "sql_text": "",
-        "duration_ms": null,
-        "event": "",
-        "query_plan": "",
-        "plan_node": ""
-      }
-
   postgres_1c_to_otlp:
     type: remap
     inputs: [postgres_1c_parsed]
@@ -289,48 +222,9 @@ transforms:
         }]
       }
 
-  postgres_docker_to_otlp:
-    type: remap
-    inputs: [postgres_docker_parsed]
-    source: |
-      ts_ns, ts_err = to_unix_timestamp(.timestamp, unit: "nanoseconds")
-      if ts_err != null {
-        ts_ns = to_unix_timestamp!(now(), unit: "nanoseconds")
-      }
-      service = .service
-      severity_text = .severity
-      severity_number = .severity_number
-      body = .body
-      . = {
-        "resourceLogs": [{
-          "resource": {
-            "attributes": [
-              {"key": "service.name", "value": {"stringValue": service}},
-              {"key": "deployment.environment", "value": {"stringValue": "docker"}}
-            ]
-          },
-          "scopeLogs": [{
-            "scope": {
-              "name": "vector.postgres_docker",
-              "version": "1.0.0"
-            },
-            "logRecords": [{
-              "timeUnixNano": ts_ns,
-              "severityNumber": severity_number,
-              "severityText": severity_text,
-              "body": {"stringValue": body},
-              "attributes": [
-                {"key": "db.system", "value": {"stringValue": "postgresql"}},
-                {"key": "com.docker.compose.service", "value": {"stringValue": service}}
-              ]
-            }]
-          }]
-        }]
-      }
-
   postgres_ch_row:
     type: remap
-    inputs: [postgres_1c_parsed, postgres_docker_parsed]
+    inputs: [postgres_1c_parsed]
     source: |
       . = {
         "timestamp": .timestamp,
@@ -419,10 +313,10 @@ transforms:
 sinks:
   clickhouse_pg_otlp:
     type: opentelemetry
-    inputs: [postgres_1c_to_otlp, postgres_docker_to_otlp]
+    inputs: [postgres_1c_to_otlp]
     protocol:
       type: http
-      uri: http://clickhouse-pg:4318/v1/logs
+      uri: http://clickhouse-db:4318/v1/logs
       method: post
       encoding:
         codec: otlp
@@ -433,7 +327,7 @@ sinks:
   clickhouse_pg_logs:
     type: clickhouse
     inputs: [postgres_ch_row]
-    endpoint: ${CLICKHOUSE_PG_ENDPOINT}
+    endpoint: ${CLICKHOUSE_ENDPOINT}
     database: postgres
     table: logs
     skip_unknown_fields: true
@@ -441,8 +335,8 @@ sinks:
     compression: gzip
     auth:
       strategy: basic
-      user: ${CLICKHOUSE_PG_USERNAME}
-      password: ${CLICKHOUSE_PG_PASSWORD}
+      user: ${CLICKHOUSE_USERNAME}
+      password: ${CLICKHOUSE_PASSWORD}
     batch:
       max_events: 200
       timeout_secs: 5
@@ -450,7 +344,7 @@ sinks:
   clickhouse_pg_plans:
     type: clickhouse
     inputs: [postgres_plan_row]
-    endpoint: ${CLICKHOUSE_PG_ENDPOINT}
+    endpoint: ${CLICKHOUSE_ENDPOINT}
     database: postgres
     table: query_plans
     skip_unknown_fields: true
@@ -458,8 +352,8 @@ sinks:
     compression: gzip
     auth:
       strategy: basic
-      user: ${CLICKHOUSE_PG_USERNAME}
-      password: ${CLICKHOUSE_PG_PASSWORD}
+      user: ${CLICKHOUSE_USERNAME}
+      password: ${CLICKHOUSE_PASSWORD}
     batch:
       max_events: 100
       timeout_secs: 5
@@ -467,7 +361,7 @@ sinks:
   clickhouse_pg_errors:
     type: clickhouse
     inputs: [postgres_error_row]
-    endpoint: ${CLICKHOUSE_PG_ENDPOINT}
+    endpoint: ${CLICKHOUSE_ENDPOINT}
     database: postgres
     table: errors
     skip_unknown_fields: true
@@ -475,8 +369,8 @@ sinks:
     compression: gzip
     auth:
       strategy: basic
-      user: ${CLICKHOUSE_PG_USERNAME}
-      password: ${CLICKHOUSE_PG_PASSWORD}
+      user: ${CLICKHOUSE_USERNAME}
+      password: ${CLICKHOUSE_PASSWORD}
     batch:
       max_events: 50
       timeout_secs: 5

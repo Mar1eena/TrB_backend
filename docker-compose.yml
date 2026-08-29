@@ -166,8 +166,6 @@ services:
     depends_on:
       clickhouse-db:
         condition: service_healthy
-      clickhouse-pg:
-        condition: service_healthy
 
   ############################# ENVOY #############################
   envoy:
@@ -226,7 +224,7 @@ services:
       IS_OSS: "true"
       # HyperDX → ClickHouse: пароль обязателен (в образе default/default, не пустой)
       DEFAULT_CONNECTIONS: '[{"name":"Local ClickHouse","host":"http://127.0.0.1:8123","username":"${CLICKHOUSE_USERNAME:-default}","password":"${CLICKHOUSE_PASSWORD:-default}"}]'
-      DEFAULT_SOURCES: '[{"from":{"databaseName":"default","tableName":"otel_logs"},"kind":"log","timestampValueExpression":"Timestamp","name":"Logs","displayedTimestampValueExpression":"Timestamp","implicitColumnExpression":"Body","serviceNameExpression":"ServiceName","bodyExpression":"Body","eventAttributesExpression":"LogAttributes","resourceAttributesExpression":"ResourceAttributes","defaultTableSelectExpression":"Timestamp,ServiceName,SeverityText,Body","severityTextExpression":"SeverityText","traceIdExpression":"TraceId","spanIdExpression":"SpanId","connection":"Local ClickHouse"}]'
+      DEFAULT_SOURCES: '[{"from":{"databaseName":"default","tableName":"otel_logs"},"kind":"log","timestampValueExpression":"Timestamp","name":"Logs","displayedTimestampValueExpression":"Timestamp","implicitColumnExpression":"Body","serviceNameExpression":"ServiceName","bodyExpression":"Body","eventAttributesExpression":"LogAttributes","resourceAttributesExpression":"ResourceAttributes","defaultTableSelectExpression":"Timestamp,ServiceName,SeverityText,Body","severityTextExpression":"SeverityText","traceIdExpression":"TraceId","spanIdExpression":"SpanId","connection":"Local ClickHouse"},{"from":{"databaseName":"techlog","tableName":"events"},"kind":"log","timestampValueExpression":"timestamp","name":"1C Techlog","displayedTimestampValueExpression":"timestamp","implicitColumnExpression":"raw","serviceNameExpression":"process","bodyExpression":"raw","defaultTableSelectExpression":"timestamp,event,severity,process,usr,duration_ms,context","severityTextExpression":"severity","connection":"Local ClickHouse"},{"from":{"databaseName":"postgres","tableName":"logs"},"kind":"log","timestampValueExpression":"timestamp","name":"PostgreSQL 1C","displayedTimestampValueExpression":"timestamp","implicitColumnExpression":"message","serviceNameExpression":"service","bodyExpression":"sql_text","defaultTableSelectExpression":"timestamp,service,severity,dbname,user,duration_ms,sql_text","severityTextExpression":"severity","connection":"Local ClickHouse"}]'
     volumes:
       - clickhouse_data:/var/lib/clickhouse  # таблицы ClickHouse
       - hyperdx_data:/data/db                # MongoDB HyperDX: дашборды, alerts, saved searches
@@ -266,9 +264,9 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 10G
+          memory: 12G
         reservations:
-          memory: 6G
+          memory: 8G
 
   # https://github.com/ClickHouse/mcp-clickhouse
   # HTTP MCP: http://127.0.0.1:8000/mcp  health: http://127.0.0.1:8000/health
@@ -478,80 +476,30 @@ services:
   #####################################################################################
 
   ############################## MONITORING  ##########################################
-  # Логи PostgreSQL (jsonlog + docker) → отдельный ClickStack / HyperDX :8082
-  clickhouse-pg:
-    image: clickhouse/clickstack-all-in-one:latest
-    container_name: trb-clickhouse-pg
-    restart: unless-stopped
-    ports:
-      - "8082:8080"
-      - "8124:8123"
-      - "9001:9000"
-      - "4319:4317"
-      - "4320:4318"
-    environment:
-      CLICKHOUSE_DB: default
-      CLICKHOUSE_USER: ${CLICKHOUSE_PG_USERNAME:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PG_PASSWORD:-default}
-      IS_OSS: "true"
-      DEFAULT_CONNECTIONS: '[{"name":"Local ClickHouse","host":"http://127.0.0.1:8123","username":"${CLICKHOUSE_PG_USERNAME:-default}","password":"${CLICKHOUSE_PG_PASSWORD:-default}"}]'
-      DEFAULT_SOURCES: '[{"from":{"databaseName":"default","tableName":"otel_logs"},"kind":"log","timestampValueExpression":"Timestamp","name":"PostgreSQL Logs","displayedTimestampValueExpression":"Timestamp","implicitColumnExpression":"Body","serviceNameExpression":"ServiceName","bodyExpression":"Body","eventAttributesExpression":"LogAttributes","resourceAttributesExpression":"ResourceAttributes","defaultTableSelectExpression":"Timestamp,ServiceName,SeverityText,Body","severityTextExpression":"SeverityText","traceIdExpression":"TraceId","spanIdExpression":"SpanId","connection":"Local ClickHouse"}]'
-    volumes:
-      - clickhouse_pg_data:/var/lib/clickhouse
-      - hyperdx_pg_data:/data/db
-      - ./volumes/clickhouse-pg/log:/var/log
-      - ./configs/clickhouse-pg/config.d/memory.xml:/etc/clickhouse-server/config.d/memory.xml:ro
-      - ./configs/clickhouse/hyperdx/clickhouseProxy.js:/app/packages/api/build/routers/api/clickhouseProxy.js:ro
-      - ./configs/clickhouse/hyperdx/auth.js:/app/packages/api/build/middleware/auth.js:ro
-      - ./configs/clickhouse/hyperdx/entry.sh:/etc/local/entry.sh:ro
-    networks:
-      TrB_Network:
-        aliases:
-          - clickhouse-pg
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--no-verbose",
-          "--tries=1",
-          "--spider",
-          "http://127.0.0.1:8123/ping",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 90s
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 5G
-        reservations:
-          memory: 3G
-
-  vector-pg:
+  # Docker logs + 1C techlog + PostgreSQL jsonlog → clickhouse-db (HyperDX :8080)
+  vector:
     image: timberio/vector:0.51.1-alpine
-    container_name: trb-vector-pg
-    hostname: vector-pg
+    container_name: trb-vector
+    hostname: vector
     restart: unless-stopped
-    command: ["--config", "/etc/vector/postgres.yaml", "--config", "/etc/vector/techlog.yaml"]
+    command: ["--config", "/etc/vector/vector.yaml", "--config", "/etc/vector/postgres.yaml", "--config", "/etc/vector/techlog.yaml"]
     environment:
       TZ: ${SYSTEM_TIMEZONE:-Europe/Moscow}
-      CLICKHOUSE_PG_ENDPOINT: http://clickhouse-pg:8123
-      CLICKHOUSE_PG_USERNAME: ${CLICKHOUSE_PG_USERNAME:-default}
-      CLICKHOUSE_PG_PASSWORD: ${CLICKHOUSE_PG_PASSWORD:-default}
+      CLICKHOUSE_ENDPOINT: http://clickhouse-db:8123
+      CLICKHOUSE_USERNAME: ${CLICKHOUSE_USERNAME:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-default}
     volumes:
+      - ./configs/vector/vector.yaml:/etc/vector/vector.yaml:ro
       - ./configs/vector/postgres.yaml:/etc/vector/postgres.yaml:ro
       - ./configs/vector/techlog.yaml:/etc/vector/techlog.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${POSTGRES_1C_LOG_PATH:-./volumes/postgre-1c-db/log}:/var/log/postgresql-1c:ro
       - ${ONEC_TECHLOG_PATH:-./volumes/1c-techlog}:/var/log/1c-techlog:ro
-      - vector_pg_data:/var/lib/vector
+      - vector_data:/var/lib/vector
     ports:
-      - "8687:8686"
+      - "8686:8686"
     depends_on:
-      clickhouse-pg:
+      clickhouse-db:
         condition: service_healthy
       postgre-1c-db:
         condition: service_started
@@ -563,45 +511,14 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: 512M
+          memory: 768M
         reservations:
-          memory: 128M
-
-  # Логи сервисов: Vector (docker logs) → OTLP :4318 → ClickStack collector → otel_* → HyperDX
-  vector:
-    image: timberio/vector:0.51.1-alpine
-    container_name: trb-vector
-    hostname: vector
-    restart: unless-stopped
-    command: ["--config", "/etc/vector/vector.yaml"]
-    environment:
-      TZ: ${SYSTEM_TIMEZONE:-Europe/Moscow}
-    volumes:
-      - ./configs/vector/vector.yaml:/etc/vector/vector.yaml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - vector_data:/var/lib/vector
-    ports:
-      - "8686:8686"
-    depends_on:
-      clickhouse-db:
-        condition: service_healthy
-    networks:
-      TrB_Network:
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 256M
-        reservations:
-          memory: 64M
+          memory: 192M
 ###############################################################################
 volumes:
   clickhouse_data:
   hyperdx_data:
   vector_data:
-  clickhouse_pg_data:
-  hyperdx_pg_data:
-  vector_pg_data:
   postgrespro-1c-data:
 
 networks:

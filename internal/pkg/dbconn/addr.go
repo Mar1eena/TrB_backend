@@ -56,7 +56,7 @@ func dockerNative(host, port string) (string, string) {
 	case "8123":
 		port = "9000"
 	case "8124":
-		port = "9001"
+		port = "9000"
 	}
 	if !loopbackHost(host) {
 		return host, port
@@ -65,7 +65,7 @@ func dockerNative(host, port string) (string, string) {
 	case "9000":
 		return "clickhouse-db", "9000"
 	case "9001":
-		return "clickhouse-pg", "9000"
+		return "clickhouse-db", "9000"
 	case "5432":
 		return "postgre-db", "5432"
 	case "5435":
@@ -80,7 +80,7 @@ func hostNative(host, port string) (string, string) {
 	case "8123":
 		return host, "9000"
 	case "8124":
-		return host, "9001"
+		return host, "9000"
 	default:
 		return host, port
 	}

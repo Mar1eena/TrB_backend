@@ -1,4 +1,4 @@
-# 1C technological journal (rphost) → techlog.events in ClickHouse → HyperDX :8082
+# 1C technological journal (rphost) → techlog.events in ClickHouse → HyperDX :8080
 # Host files: volumes/1c-techlog/rphost_*\YYMMDDHH.log  (configs/1c/logcfg.xml)
 
 sources:
@@ -8,7 +8,7 @@ sources:
       - /var/log/1c-techlog/rphost_*/*.log
       - /var/log/1c-techlog/rmngr_*/*.log
       - /var/log/1c-techlog/ragent_*/*.log
-    read_from: beginning
+    read_from: end
     glob_minimum_cooldown_ms: 2000
     max_line_bytes: 1048576
     fingerprint:
@@ -185,7 +185,7 @@ sinks:
   clickhouse_techlog:
     type: clickhouse
     inputs: [onec_techlog_valid]
-    endpoint: ${CLICKHOUSE_PG_ENDPOINT}
+    endpoint: ${CLICKHOUSE_ENDPOINT}
     database: techlog
     table: events
     skip_unknown_fields: true
@@ -193,8 +193,8 @@ sinks:
     compression: gzip
     auth:
       strategy: basic
-      user: ${CLICKHOUSE_PG_USERNAME}
-      password: ${CLICKHOUSE_PG_PASSWORD}
+      user: ${CLICKHOUSE_USERNAME}
+      password: ${CLICKHOUSE_PASSWORD}
     batch:
       max_events: 200
       timeout_secs: 5

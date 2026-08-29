@@ -25,15 +25,15 @@ func TestParseHostPort(t *testing.T) {
 
 func TestRewritePorts(t *testing.T) {
 	h, p := hostNative("localhost", "8124")
-	if h != "localhost" || p != "9001" {
+	if h != "localhost" || p != "9000" {
 		t.Fatalf("host 8124: %s:%s", h, p)
 	}
 	h, p = dockerNative("localhost", "8124")
-	if h != "clickhouse-pg" || p != "9000" {
+	if h != "clickhouse-db" || p != "9000" {
 		t.Fatalf("docker 8124: %s:%s", h, p)
 	}
 	h, p = dockerNative("127.0.0.1", "9001")
-	if h != "clickhouse-pg" || p != "9000" {
+	if h != "clickhouse-db" || p != "9000" {
 		t.Fatalf("docker 9001: %s:%s", h, p)
 	}
 	h, p = dockerNative("127.0.0.1", "5435")
