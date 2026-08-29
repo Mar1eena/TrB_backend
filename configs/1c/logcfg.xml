@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns="http://v8.1c.ru/v8/tech-log">
+  <!-- ITS 6006: управляемые блокировки + границы транзакций + SQL PostgreSQL + исключения.
+       Каталог location должен быть доступен на запись службе 1C (LocalSystem). -->
+  <log location="F:\Git\TrB_backend\volumes\1c-techlog" history="2">
+    <event>
+      <eq property="Name" value="TLOCK"/>
+    </event>
+    <event>
+      <eq property="Name" value="TTIMEOUT"/>
+    </event>
+    <event>
+      <eq property="Name" value="TDEADLOCK"/>
+    </event>
+    <event>
+      <eq property="Name" value="EXCP"/>
+    </event>
+    <event>
+      <eq property="Name" value="SDBL"/>
+      <eq property="Func" value="BeginTransaction"/>
+    </event>
+    <event>
+      <eq property="Name" value="SDBL"/>
+      <eq property="Func" value="RollbackTransaction"/>
+    </event>
+    <event>
+      <eq property="Name" value="SDBL"/>
+      <eq property="Func" value="CommitTransaction"/>
+    </event>
+    <event>
+      <eq property="Name" value="DBPOSTGRS"/>
+    </event>
+    <property name="all"/>
+  </log>
+</config>

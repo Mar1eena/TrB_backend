@@ -501,7 +501,7 @@ services:
     container_name: trb-vector-pg
     hostname: vector-pg
     restart: unless-stopped
-    command: ["--config", "/etc/vector/postgres.yaml"]
+    command: ["--config", "/etc/vector/postgres.yaml", "--config", "/etc/vector/techlog.yaml"]
     environment:
       TZ: ${SYSTEM_TIMEZONE:-Europe/Moscow}
       CLICKHOUSE_PG_ENDPOINT: http://clickhouse-pg:8123
@@ -509,8 +509,10 @@ services:
       CLICKHOUSE_PG_PASSWORD: ${CLICKHOUSE_PG_PASSWORD:-default}
     volumes:
       - ./configs/vector/postgres.yaml:/etc/vector/postgres.yaml:ro
+      - ./configs/vector/techlog.yaml:/etc/vector/techlog.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${POSTGRES_1C_LOG_PATH:-./volumes/postgre-1c-db/log}:/var/log/postgresql-1c:ro
+      - ${ONEC_TECHLOG_PATH:-./volumes/1c-techlog}:/var/log/1c-techlog:ro
       - vector_pg_data:/var/lib/vector
     ports:
       - "8687:8686"

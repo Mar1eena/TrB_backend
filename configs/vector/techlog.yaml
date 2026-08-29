@@ -1,0 +1,200 @@
+# 1C technological journal (rphost) → techlog.events in ClickHouse → HyperDX :8082
+# Host files: volumes/1c-techlog/rphost_*\YYMMDDHH.log  (configs/1c/logcfg.xml)
+
+sources:
+  onec_techlog:
+    type: file
+    include:
+      - /var/log/1c-techlog/rphost_*/*.log
+      - /var/log/1c-techlog/rmngr_*/*.log
+      - /var/log/1c-techlog/ragent_*/*.log
+    read_from: beginning
+    glob_minimum_cooldown_ms: 2000
+    max_line_bytes: 1048576
+    fingerprint:
+      strategy: checksum
+      bytes: 32
+    multiline:
+      start_pattern: '^[0-9]{2}:[0-9]{2}\.'
+      condition_pattern: '^[0-9]{2}:[0-9]{2}\.'
+      mode: halt_before
+      timeout_ms: 2000
+
+transforms:
+  onec_techlog_parsed:
+    type: remap
+    inputs: [onec_techlog]
+    source: |
+      raw = string(.message) ?? ""
+      file_path = string(.file) ?? ""
+      ts = .timestamp
+      duration_us = 0
+      event = ""
+      level = 0
+      process = ""
+      process_name = ""
+      os_thread = 0
+      client_id = 0
+      application_name = ""
+      computer_name = ""
+      connect_id = 0
+      session_id = 0
+      usr = ""
+      app_id = ""
+      dbpid = 0
+      func = ""
+      regions = ""
+      locks = ""
+      wait_connections = ""
+      context = ""
+      descr = ""
+      exception = ""
+      sql_text = ""
+      lka = ""
+      lkp = ""
+      lkpid = ""
+      lksrc = ""
+      lkpto = ""
+      lkato = ""
+      severity = "INFO"
+      event_mm = "00"
+      event_ss = "00.0"
+      props = ""
+
+      header = parse_regex(raw, r'(?s)^(?P<mm>\d{2}):(?P<ss>\d{2}\.\d+)-(?P<dur>\d+),(?P<event>[A-Za-z0-9]+),(?P<level>\d+),(?P<props>.*)$') ?? {}
+      event = string(header.event) ?? ""
+      if event != "" {
+        duration_us = to_int(header.dur) ?? 0
+        level = to_int(header.level) ?? 0
+        props = string(header.props) ?? ""
+        event_mm = string(header.mm) ?? "00"
+        event_ss = string(header.ss) ?? "00.0"
+
+        p_process = parse_regex(props, r'(?:^|,)process=(?P<v>[^,]*)') ?? {}
+        process = string(p_process.v) ?? ""
+        p_ib = parse_regex(props, r'(?:^|,)p:processName=(?P<v>[^,]*)') ?? {}
+        process_name = string(p_ib.v) ?? ""
+        p_ost = parse_regex(props, r'(?:^|,)OSThread=(?P<v>[^,]*)') ?? {}
+        os_thread = to_int(p_ost.v) ?? 0
+        p_clid = parse_regex(props, r'(?:^|,)t:clientID=(?P<v>[^,]*)') ?? {}
+        client_id = to_int(p_clid.v) ?? 0
+        p_appn = parse_regex(props, r'(?:^|,)t:applicationName=(?P<v>[^,]*)') ?? {}
+        application_name = string(p_appn.v) ?? ""
+        p_comp = parse_regex(props, r'(?:^|,)t:computerName=(?P<v>[^,]*)') ?? {}
+        computer_name = string(p_comp.v) ?? ""
+        p_conn = parse_regex(props, r'(?:^|,)t:connectID=(?P<v>[^,]*)') ?? {}
+        connect_id = to_int(p_conn.v) ?? 0
+        p_sess = parse_regex(props, r'(?:^|,)SessionID=(?P<v>[^,]*)') ?? {}
+        session_id = to_int(p_sess.v) ?? 0
+        p_usr = parse_regex(props, r'(?:^|,)Usr=(?P<v>[^,]*)') ?? {}
+        usr = string(p_usr.v) ?? ""
+        p_appid = parse_regex(props, r'(?:^|,)AppID=(?P<v>[^,]*)') ?? {}
+        app_id = string(p_appid.v) ?? ""
+        p_dbpid = parse_regex(props, r'(?:^|,)dbpid=(?P<v>[^,]*)') ?? {}
+        dbpid = to_int(p_dbpid.v) ?? 0
+        p_func = parse_regex(props, r'(?:^|,)Func=(?P<v>[^,]*)') ?? {}
+        func = string(p_func.v) ?? ""
+        p_reg = parse_regex(props, r'(?:^|,)Regions=(?P<v>.*?)(?:,Locks=|,WaitConnections=|,Context=|,connectionID=|$)') ?? {}
+        regions = replace(string(p_reg.v) ?? "", "'", "")
+        p_locks = parse_regex(props, r'(?:^|,)Locks=(?P<v>.*?)(?:,WaitConnections=|,Context=|,connectionID=|$)') ?? {}
+        locks = replace(string(p_locks.v) ?? "", "'", "")
+        p_wait = parse_regex(props, r'(?:^|,)WaitConnections=(?P<v>[0-9]+(?:,[0-9]+)*)') ?? {}
+        wait_connections = string(p_wait.v) ?? ""
+        p_ctx = parse_regex(props, r'(?s)(?:^|,)Context=(?P<v>.*)$') ?? {}
+        context = replace(string(p_ctx.v) ?? "", "'", "")
+        p_descr = parse_regex(props, r'(?s)(?:^|,)Descr=(?P<v>.*?)(?:,Context=|,Exception=|$)') ?? {}
+        descr = replace(string(p_descr.v) ?? "", "'", "")
+        p_exc = parse_regex(props, r'(?:^|,)Exception=(?P<v>[^,]*)') ?? {}
+        exception = string(p_exc.v) ?? ""
+        p_sql = parse_regex(props, r'(?s)(?:^|,)Sql=(?P<v>.*?)(?:,Context=|,planSQLText=|$)') ?? {}
+        sql_text = replace(string(p_sql.v) ?? "", "'", "")
+        p_lka = parse_regex(props, r'(?:^|,)lka=(?P<v>[^,]*)') ?? {}
+        lka = replace(string(p_lka.v) ?? "", "'", "")
+        p_lkp = parse_regex(props, r'(?:^|,)lkp=(?P<v>[^,]*)') ?? {}
+        lkp = replace(string(p_lkp.v) ?? "", "'", "")
+        p_lkpid = parse_regex(props, r'(?:^|,)lkpid=(?P<v>[^,]*)') ?? {}
+        lkpid = replace(string(p_lkpid.v) ?? "", "'", "")
+        p_lksrc = parse_regex(props, r'(?:^|,)lksrc=(?P<v>[^,]*)') ?? {}
+        lksrc = replace(string(p_lksrc.v) ?? "", "'", "")
+        p_lkpto = parse_regex(props, r'(?:^|,)lkpto=(?P<v>[^,]*)') ?? {}
+        lkpto = string(p_lkpto.v) ?? ""
+        p_lkato = parse_regex(props, r'(?:^|,)lkato=(?P<v>[^,]*)') ?? {}
+        lkato = string(p_lkato.v) ?? ""
+
+        if event == "TTIMEOUT" || event == "TDEADLOCK" || event == "EXCP" {
+          severity = "ERROR"
+        } else if wait_connections != "" || lkp == "1" {
+          severity = "WARN"
+        }
+
+        fmeta = parse_regex(file_path, r'(?P<yy>\d{2})(?P<mo>\d{2})(?P<dd>\d{2})(?P<hh>\d{2})\.log$') ?? {}
+        fyy = string(fmeta.yy) ?? ""
+        if fyy != "" {
+          ts_parts = ["20", fyy, "-", string(fmeta.mo) ?? "01", "-", string(fmeta.dd) ?? "01", " ", string(fmeta.hh) ?? "00", ":", event_mm, ":", event_ss]
+          ts_str = join!(ts_parts, "")
+          parsed, perr = parse_timestamp(ts_str, format: "%Y-%m-%d %H:%M:%S%.f", timezone: "Europe/Moscow")
+          if perr == null {
+            ts = parsed
+          }
+        }
+      }
+
+      duration_ms = to_float(duration_us) / 1000.0
+      . = {
+        "timestamp": ts,
+        "duration_us": duration_us,
+        "duration_ms": duration_ms,
+        "event": event,
+        "severity": severity,
+        "level": level,
+        "process": process,
+        "process_name": process_name,
+        "os_thread": os_thread,
+        "client_id": client_id,
+        "application_name": application_name,
+        "computer_name": computer_name,
+        "connect_id": connect_id,
+        "session_id": session_id,
+        "usr": usr,
+        "app_id": app_id,
+        "dbpid": dbpid,
+        "func": func,
+        "regions": regions,
+        "locks": locks,
+        "wait_connections": wait_connections,
+        "context": context,
+        "descr": descr,
+        "exception": exception,
+        "sql_text": sql_text,
+        "lka": lka,
+        "lkp": lkp,
+        "lkpid": lkpid,
+        "lksrc": lksrc,
+        "lkpto": lkpto,
+        "lkato": lkato,
+        "file": file_path,
+        "raw": raw
+      }
+
+  onec_techlog_valid:
+    type: filter
+    inputs: [onec_techlog_parsed]
+    condition: '.event != ""'
+
+sinks:
+  clickhouse_techlog:
+    type: clickhouse
+    inputs: [onec_techlog_valid]
+    endpoint: ${CLICKHOUSE_PG_ENDPOINT}
+    database: techlog
+    table: events
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    compression: gzip
+    auth:
+      strategy: basic
+      user: ${CLICKHOUSE_PG_USERNAME}
+      password: ${CLICKHOUSE_PG_PASSWORD}
+    batch:
+      max_events: 200
+      timeout_secs: 5
