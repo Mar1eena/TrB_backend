@@ -91,15 +91,6 @@ services:
       - invest
       - nats-server
 
-  historiccandle_scheduler:
-    <<: [*services-config]
-    container_name: trb-historiccandle_scheduler
-    image: historiccandle-scheduler:latest
-    depends_on:
-      - nats-server
-      - clickhouse-db
-      - postgre-db
-
   invest:
     <<: [*services-config]
     container_name: trb-invest
