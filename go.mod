@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
-	github.com/Mar1eena/trb_proto v1.0.42
+	github.com/Mar1eena/trb_proto v1.0.43
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.4
 	github.com/joho/godotenv v1.5.1

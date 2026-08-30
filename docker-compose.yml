@@ -409,72 +409,72 @@ services:
         reservations:
           memory: 256M
   
-  postgre-1c-db:
-    image: postgre-1c-db:latest
-    container_name: postgre-1c-db
-    hostname: postgre1c
-    build:
-      context: ./build/docker/postgre-1c-db
-      dockerfile: Dockerfile
-    command:
-      - "postgres"
-      - "-c"
-      - "listen_addresses=*"
-      - "-c"
-      - "max_connections=50"
-      - "-c"
-      - "shared_buffers=1GB"
-      - "-c"
-      - "effective_cache_size=3GB"
-      - "-c"
-      - "work_mem=16MB"
-      - "-c"
-      - "maintenance_work_mem=256MB"
-      - "-c"
-      - "random_page_cost=1.1"
-      - "-c"
-      - "temp_file_limit=10GB"
-      - "-c"
-      - "idle_in_transaction_session_timeout=10s"
-      - "-c"
-      - "lock_timeout=1s"
-      - "-c"
-      - "statement_timeout=60s"
-    environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_DB: ${POSTGRES_1C_DB:-TrB_DB}
-      POSTGRES_USER: ${POSTGRES_1C_USER:-admin}
-      POSTGRES_PASSWORD: ${POSTGRES_1C_PASSWORD:-1984}
-      PGDATA: "/var/lib/pgpro/1c-17/data"
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    volumes:
-      - postgrespro-1c-data:/var/lib/pgpro/1c-17/data
-      - ${POSTGRES_1C_LOG_PATH:-./volumes/postgre-1c-db/log}:/var/log/postgresql
-      - ./configs/postgre-1c-db:/etc/pg-config:ro
-    ports:
-      - "5435:5432"
-    healthcheck:
-      # TCP, иначе peer по unix-сокету как root сыпет FATAL в лог каждые 10s
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER:-admin} -d $${POSTGRES_DB:-TrB_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    restart: unless-stopped
-    shm_size: 256mb
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 4G
-        reservations:
-          memory: 2G
-    networks:
-      TrB_Network:
+  # postgre-1c-db:
+  #   image: postgre-1c-db:latest
+  #   container_name: postgre-1c-db
+  #   hostname: postgre1c
+  #   build:
+  #     context: ./build/docker/postgre-1c-db
+  #     dockerfile: Dockerfile
+  #   command:
+  #     - "postgres"
+  #     - "-c"
+  #     - "listen_addresses=*"
+  #     - "-c"
+  #     - "max_connections=50"
+  #     - "-c"
+  #     - "shared_buffers=1GB"
+  #     - "-c"
+  #     - "effective_cache_size=3GB"
+  #     - "-c"
+  #     - "work_mem=16MB"
+  #     - "-c"
+  #     - "maintenance_work_mem=256MB"
+  #     - "-c"
+  #     - "random_page_cost=1.1"
+  #     - "-c"
+  #     - "temp_file_limit=10GB"
+  #     - "-c"
+  #     - "idle_in_transaction_session_timeout=10s"
+  #     - "-c"
+  #     - "lock_timeout=1s"
+  #     - "-c"
+  #     - "statement_timeout=60s"
+  #   environment:
+  #     POSTGRES_HOST: postgres
+  #     POSTGRES_DB: ${POSTGRES_1C_DB:-TrB_DB}
+  #     POSTGRES_USER: ${POSTGRES_1C_USER:-admin}
+  #     POSTGRES_PASSWORD: ${POSTGRES_1C_PASSWORD:-1984}
+  #     PGDATA: "/var/lib/pgpro/1c-17/data"
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+  #   volumes:
+  #     - postgrespro-1c-data:/var/lib/pgpro/1c-17/data
+  #     - ${POSTGRES_1C_LOG_PATH:-./volumes/postgre-1c-db/log}:/var/log/postgresql
+  #     - ./configs/postgre-1c-db:/etc/pg-config:ro
+  #   ports:
+  #     - "5435:5432"
+  #   healthcheck:
+  #     # TCP, иначе peer по unix-сокету как root сыпет FATAL в лог каждые 10s
+  #     test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER:-admin} -d $${POSTGRES_DB:-TrB_DB}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 10s
+  #   restart: unless-stopped
+  #   shm_size: 256mb
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '1'
+  #         memory: 4G
+  #       reservations:
+  #         memory: 2G
+  #   networks:
+  #     TrB_Network:
 
   ################################################################################
 
