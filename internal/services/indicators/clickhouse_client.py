@@ -71,7 +71,3 @@ def client_for_thread() -> Client:
         client = _create_client()
         _tls.client = client
     return client
-
-
-def get_client() -> Client:
-    return client_for_thread()

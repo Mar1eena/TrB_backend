@@ -11,7 +11,6 @@ from clickhouse_client import client_for_thread
 from instrument import compute_for_instrument
 from loader import list_indicator_values
 from registry import REGISTRY
-from scheduler import list_scheduler_targets, sync_scheduler_targets
 
 
 class IndicatorsServicer(indicators_pb2_grpc.IndicatorsServicer):
@@ -62,42 +61,6 @@ class IndicatorsServicer(indicators_pb2_grpc.IndicatorsServicer):
             items.append(info)
         items.sort(key=lambda x: x.type)
         return pb.ListSupportedResponse(indicators=items)
-
-    def ListSchedulerTargets(
-        self,
-        request: pb.ListSchedulerTargetsRequest,
-        context: grpc.ServicerContext,
-    ) -> pb.ListSchedulerTargetsResponse:
-        if not self._ch_enabled:
-            context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
-            context.set_details("ClickHouse не настроен (CLICKHOUSE_URL_DOCKER)")
-            return pb.ListSchedulerTargetsResponse()
-        try:
-            return list_scheduler_targets(client_for_thread())
-        except Exception as exc:
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(str(exc))
-            return pb.ListSchedulerTargetsResponse()
-
-    def SyncSchedulerTargets(
-        self,
-        request: pb.SyncSchedulerTargetsRequest,
-        context: grpc.ServicerContext,
-    ) -> pb.SyncSchedulerTargetsResponse:
-        if not self._ch_enabled:
-            context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
-            context.set_details("ClickHouse не настроен (CLICKHOUSE_URL_DOCKER)")
-            return pb.SyncSchedulerTargetsResponse()
-        try:
-            return sync_scheduler_targets(client_for_thread(), request)
-        except ComputeError as exc:
-            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-            context.set_details(str(exc))
-            return pb.SyncSchedulerTargetsResponse()
-        except Exception as exc:
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(str(exc))
-            return pb.SyncSchedulerTargetsResponse()
 
     def ListIndicatorValues(
         self,

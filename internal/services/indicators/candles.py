@@ -7,10 +7,6 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import numpy as np
-from google.protobuf.timestamp_pb2 import Timestamp
-from indicators import indicators_pb2 as pb
-
-from calc import ComputeError
 
 if TYPE_CHECKING:
     from clickhouse_connect.driver.client import Client
@@ -38,16 +34,6 @@ INTERVAL_SECONDS: dict[int, int] = {
 }
 
 
-def _ts_to_datetime(ts: Timestamp) -> datetime:
-    return ts.ToDatetime().replace(tzinfo=timezone.utc)
-
-
-def _datetime_to_ts(dt: datetime) -> Timestamp:
-    ts = Timestamp()
-    ts.FromDatetime(dt.replace(tzinfo=None) if dt.tzinfo else dt)
-    return ts
-
-
 def as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
@@ -61,22 +47,6 @@ def bar_seconds(interval: int) -> int:
 def lookback_delta(interval: int, min_bars: int, *, warmup_mult: int = 2) -> timedelta:
     bar_sec = bar_seconds(interval)
     return timedelta(seconds=bar_sec * max(min_bars, 1) * max(warmup_mult, 1))
-
-
-def chunk_windows(
-    from_dt: datetime,
-    to_dt: datetime,
-    chunk: timedelta,
-) -> list[tuple[datetime, datetime]]:
-    windows: list[tuple[datetime, datetime]] = []
-    cur = from_dt
-    while cur <= to_dt:
-        end = min(cur + chunk, to_dt)
-        windows.append((cur, end))
-        if end >= to_dt:
-            break
-        cur = end + timedelta(milliseconds=1)
-    return windows
 
 
 HCT_OHLCV_QUERY = """
@@ -97,22 +67,35 @@ ORDER BY time ASC
 """
 
 
-def _fetch_ohlcv_rows(
+def get_last_complete_candle_time(
     client: Client,
     uid: str,
     interval: int,
-    load_from: datetime,
-    to_dt: datetime,
-):
-    return client.query(
-        HCT_OHLCV_QUERY,
-        parameters={
-            "uid": uid,
-            "interval": interval,
-            "load_from": load_from.replace(tzinfo=None),
-            "to_dt": to_dt.replace(tzinfo=None),
-        },
+) -> datetime | None:
+    """Возвращает дату последней свечи с is_complete = true для (uid, interval)."""
+    res = client.query(
+        """
+        SELECT time
+        FROM TrB.hct FINAL
+        WHERE uid = {uid:String}
+          AND interval = {interval:Int32}
+          AND is_complete = true
+        ORDER BY time DESC
+        LIMIT 1
+        """,
+        parameters={"uid": uid, "interval": interval},
     )
+    if not res.result_rows:
+        return None
+    raw = res.result_rows[0][0]
+    if raw is None:
+        return None
+    t = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    else:
+        t = t.astimezone(timezone.utc)
+    return t
 
 
 def load_ohlcv(
@@ -175,87 +158,3 @@ def load_ohlcv(
             "close": closes,
             "volume": volumes,
         }
-
-
-def concat_ohlcv(
-    parts: list[tuple[list[datetime] | np.ndarray, dict[str, np.ndarray]]],
-) -> tuple[list[datetime] | np.ndarray, dict[str, np.ndarray]]:
-    if not parts:
-        return [], {}
-    if len(parts) == 1:
-        return parts[0]
-
-    first_times = parts[0][0]
-    if isinstance(first_times, np.ndarray):
-        times = np.concatenate([p[0] for p in parts])
-    else:
-        times = []
-        for part_times, _ in parts:
-            times.extend(part_times)
-
-    if len(times) == 0:
-        return [], {}
-    keys = parts[0][1].keys()
-    return times, {key: np.concatenate([p[1][key] for p in parts]) for key in keys}
-
-
-def load_ohlcv_paged(
-    client: Client,
-    uid: str,
-    interval: int,
-    from_dt: datetime,
-    to_dt: datetime,
-    lookback: timedelta,
-    page: timedelta | None = None,
-) -> tuple[np.ndarray | list[datetime], dict[str, np.ndarray]]:
-    """Прямая загрузка всего ряда за один запрос (без фрагментации на сетевые round-trip)."""
-    return load_ohlcv(client, uid, interval, from_dt, to_dt, lookback)
-
-
-def load_candles(
-    client: Client,
-    uid: str,
-    interval: int,
-    from_dt: datetime,
-    to_dt: datetime,
-    lookback: timedelta,
-) -> list[pb.Candle]:
-    times, ohlcv = load_ohlcv(client, uid, interval, from_dt, to_dt, lookback)
-    if len(times) == 0:
-        load_from = from_dt - lookback
-        raise ComputeError(
-            f"нет свечей в TrB.hct для uid={uid} interval={interval} "
-            f"в диапазоне {load_from.isoformat()} — {to_dt.isoformat()}"
-        )
-
-    n = len(times)
-    candles: list[pb.Candle] = [None] * n
-    opens = ohlcv["open"]
-    highs = ohlcv["high"]
-    lows = ohlcv["low"]
-    closes = ohlcv["close"]
-    volumes = ohlcv["volume"]
-
-    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
-        epoch_sec = times.astype("datetime64[ms]").astype(np.int64) / 1000.0
-        for i in range(n):
-            dt_val = datetime.fromtimestamp(epoch_sec[i], tz=timezone.utc)
-            candles[i] = pb.Candle(
-                time=_datetime_to_ts(dt_val),
-                open=float(opens[i]),
-                high=float(highs[i]),
-                low=float(lows[i]),
-                close=float(closes[i]),
-                volume=float(volumes[i]),
-            )
-    else:
-        for i, t in enumerate(times):
-            candles[i] = pb.Candle(
-                time=_datetime_to_ts(t),
-                open=float(opens[i]),
-                high=float(highs[i]),
-                low=float(lows[i]),
-                close=float(closes[i]),
-                volume=float(volumes[i]),
-            )
-    return candles

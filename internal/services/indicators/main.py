@@ -46,7 +46,7 @@ def main() -> None:
     except Exception as exc:
         logging.warning("ClickHouse недоступен, ComputeForInstrument отключён: %s", exc)
 
-    workers = int(os.environ.get("GRPC_WORKERS", "8"))
+    workers = int(os.environ.get("GRPC_WORKERS", "4"))
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=workers),
         options=[

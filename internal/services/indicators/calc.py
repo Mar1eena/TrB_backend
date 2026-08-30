@@ -57,45 +57,6 @@ def candles_to_ohlcv(candles: list[pb.Candle]) -> tuple[list[datetime], dict[str
     return times, ohlcv
 
 
-def iter_valid_values(
-    times: list[datetime] | np.ndarray,
-    raw: dict[str, np.ndarray],
-    from_dt: datetime,
-    to_dt: datetime,
-):
-    if not raw:
-        return
-
-    keys = list(raw.keys())
-    arrays = [raw[k] for k in keys]
-    n = len(arrays[0])
-    if n == 0:
-        return
-
-    valid = np.ones(n, dtype=bool)
-    for arr in arrays:
-        valid &= ~np.isnan(arr)
-
-    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
-        from_np = np.datetime64((from_dt.astimezone(timezone.utc) if from_dt.tzinfo else from_dt).replace(tzinfo=None), "us")
-        to_np = np.datetime64((to_dt.astimezone(timezone.utc) if to_dt.tzinfo else to_dt).replace(tzinfo=None), "us")
-        valid &= (times >= from_np) & (times <= to_np)
-        indices = np.flatnonzero(valid)
-        epoch_sec = times[indices].astype("datetime64[ms]").astype(np.int64) / 1000.0
-        for idx, s in zip(indices, epoch_sec):
-            t = datetime.fromtimestamp(s, tz=timezone.utc)
-            yield t, {k: float(arr[idx]) for k, arr in zip(keys, arrays)}
-    else:
-        indices = np.flatnonzero(valid)
-        f_dt = from_dt if from_dt.tzinfo else from_dt.replace(tzinfo=timezone.utc)
-        t_dt = to_dt if to_dt.tzinfo else to_dt.replace(tzinfo=timezone.utc)
-        for idx in indices:
-            t = times[idx]
-            dt_cmp = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
-            if f_dt <= dt_cmp <= t_dt:
-                yield t, {k: float(arr[idx]) for k, arr in zip(keys, arrays)}
-
-
 def series_to_points(
     times: list[datetime] | np.ndarray,
     raw: dict[str, np.ndarray],

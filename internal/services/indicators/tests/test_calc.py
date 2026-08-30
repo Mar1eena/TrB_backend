@@ -13,19 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from google.protobuf.timestamp_pb2 import Timestamp
 from indicators import indicators_pb2 as pb
 
-from calc import candles_to_ohlcv, compute, compute_arrays, get_spec, iter_valid_values, series_to_points
-from candles import chunk_windows, concat_ohlcv
+from calc import candles_to_ohlcv, compute, series_to_points
 from registry import REGISTRY, resolve_params
-from storage import (
-    _as_metrics_dict,
-    decode_value,
-    encode_value,
-    indices_after_time,
-    new_value_row,
-    param_hash_64,
-    params_to_json,
-    values_to_arrays,
-)
+from storage import _as_metrics_dict, param_hash_64, params_to_json
 
 
 def _ts(dt: datetime) -> Timestamp:
@@ -59,54 +49,6 @@ def test_rsi_20_vs_40_same_prefix() -> None:
     for p20, p40 in zip(r20.points, r40.points):
         assert p20.time == p40.time
         assert abs(p20.values["value"] - p40.values["value"]) < 1e-9
-
-
-def test_paged_concat_one_ema_matches_full() -> None:
-    n = 180
-    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    times = [start + timedelta(minutes=i) for i in range(n)]
-    close = np.array([100 + (i % 7) * 0.4 + i * 0.05 for i in range(n)], dtype=np.float64)
-    ohlcv = {key: close.copy() for key in ("open", "high", "low", "close", "volume")}
-    spec = get_spec(pb.INDICATOR_TYPE_EMA)
-    params = resolve_params(spec, {"period": 20})
-    full = compute_arrays(spec, params, times, ohlcv)
-
-    parts: list = []
-    for win_from, win_to in chunk_windows(times[0], times[-1], timedelta(minutes=40)):
-        sl = [i for i, t in enumerate(times) if win_from <= t <= win_to]
-        parts.append(([times[i] for i in sl], {key: arr[sl] for key, arr in ohlcv.items()}))
-    cat_times, cat_ohlcv = concat_ohlcv(parts)
-    raw = compute_arrays(spec, params, cat_times, cat_ohlcv)
-
-    expected = list(iter_valid_values(times, full, times[0], times[-1]))
-    got = list(iter_valid_values(cat_times, raw, times[0], times[-1]))
-    assert len(got) == len(expected)
-    for (t1, v1), (t2, v2) in zip(expected, got):
-        assert t1 == t2
-        assert abs(v1["value"] - v2["value"]) < 1e-12
-
-
-def test_iter_valid_values_numpy_and_list() -> None:
-    n = 50
-    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    times_list = [start + timedelta(minutes=i) for i in range(n)]
-    times_np = np.datetime64("2025-01-01T00:00:00.000") + np.arange(n) * np.timedelta64(1, "m")
-
-    raw = {
-        "value": np.array([float(i) if i >= 10 else np.nan for i in range(n)], dtype=np.float64),
-    }
-
-    from_dt = start + timedelta(minutes=15)
-    to_dt = start + timedelta(minutes=40)
-
-    res_list = list(iter_valid_values(times_list, raw, from_dt, to_dt))
-    res_np = list(iter_valid_values(times_np, raw, from_dt, to_dt))
-
-    assert len(res_list) == 26  # 15 to 40 inclusive
-    assert len(res_np) == 26
-    for (t1, v1), (t2, v2) in zip(res_list, res_np):
-        assert t1 == t2
-        assert v1["value"] == v2["value"]
 
 
 def test_series_to_points_numpy_and_list() -> None:
@@ -149,31 +91,6 @@ def test_candles_to_ohlcv() -> None:
     assert ohlcv["close"][-1] == 111.0
 
 
-def test_array_value_row() -> None:
-    assert encode_value(0.046698805) == 46699
-    assert encode_value(-0.13232939) == -132329
-    assert abs(decode_value(-132329) - (-0.132329)) < 1e-9
-
-    keys, data = values_to_arrays({"value": 0.5, "signal": 0.3, "hist": 0.2})
-    assert keys == ["hist", "signal", "value"]
-    assert data == [200_000, 300_000, 500_000]
-
-    t = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
-    row = new_value_row(
-        "uid1",
-        1,
-        "MACD",
-        {"fastperiod": 12, "slowperiod": 26, "signalperiod": 9},
-        t,
-        {"value": 0.5, "signal": 0.3, "hist": 0.2},
-    )
-    assert row[0:4] == ["uid1", 1, "MACD", '{"fastperiod":12.0,"signalperiod":9.0,"slowperiod":26.0}']
-    assert row[4] == t.replace(tzinfo=None)
-    assert row[5] == ["hist", "signal", "value"]
-    assert row[6] == [200_000, 300_000, 500_000]
-    assert [decode_value(v) for v in row[6]] == [0.2, 0.3, 0.5]
-
-
 def test_all_registry_indicators() -> None:
     n = 100
     close = np.linspace(100.0, 150.0, n, dtype=np.float64)
@@ -211,30 +128,11 @@ def test_as_metrics_dict() -> None:
     assert _as_metrics_dict(None) == {}
 
 
-def test_indices_after_time() -> None:
-    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    times_list = [start + timedelta(minutes=i) for i in range(10)]
-    times_np = np.datetime64("2025-01-01T00:00:00.000") + np.arange(10) * np.timedelta64(1, "m")
-    indices = np.arange(10)
-
-    after = start + timedelta(minutes=4)
-    got_list = indices_after_time(times_list, indices, after)
-    got_np = indices_after_time(times_np, indices, after)
-    assert list(got_list) == [5, 6, 7, 8, 9]
-    assert list(got_np) == [5, 6, 7, 8, 9]
-    assert list(indices_after_time(times_np, indices, start + timedelta(minutes=20))) == []
-    assert list(indices_after_time(times_np, np.array([1, 3, 7]), after)) == [7]
-
-
 if __name__ == "__main__":
     test_rsi_20_vs_40_same_prefix()
-    test_paged_concat_one_ema_matches_full()
-    test_iter_valid_values_numpy_and_list()
     test_series_to_points_numpy_and_list()
     test_candles_to_ohlcv()
-    test_array_value_row()
     test_all_registry_indicators()
     test_param_hash_64()
     test_as_metrics_dict()
-    test_indices_after_time()
     print("ok")

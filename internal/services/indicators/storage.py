@@ -20,9 +20,6 @@ VALUES_TABLE = "indicator_values"
 VALUES_AGG_TABLE = "indicator_values_agg"
 REGISTRY_TABLE = "indicator_param_registry"
 
-# fixed-point в legacy таблицах
-VALUE_SCALE = 1_000_000
-
 VALUE_COLUMNS = [
     "interval",
     "indicator",
@@ -45,39 +42,6 @@ def param_hash_64(indicator: str, params_json: str) -> int:
     """Детерминированный 64-битный хэш от индикатора и параметров."""
     payload = f"{indicator}:{params_json}".encode("utf-8")
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], byteorder="little", signed=False)
-
-
-def encode_value(value: float) -> int:
-    return round(float(value) * VALUE_SCALE)
-
-
-def decode_value(stored: int) -> float:
-    return stored / VALUE_SCALE
-
-
-def new_value_row(
-    uid: str,
-    interval: int,
-    indicator: str,
-    params: dict[str, float],
-    t: datetime,
-    values: dict[str, float],
-) -> list:
-    keys, data = values_to_arrays(values)
-    return [
-        uid,
-        interval,
-        indicator,
-        params_to_json(params),
-        t.replace(tzinfo=None),
-        keys,
-        data,
-    ]
-
-
-def values_to_arrays(values: dict[str, float]) -> tuple[list[str], list[int]]:
-    keys = sorted(values)
-    return keys, [encode_value(values[k]) for k in keys]
 
 
 def ensure_param_registered(
@@ -155,36 +119,6 @@ def get_max_stored_time(
     return t
 
 
-def indices_after_time(
-    times: np.ndarray | list[datetime],
-    indices: np.ndarray,
-    after_dt: datetime,
-) -> np.ndarray:
-    """Индексы из `indices`, у которых time строго больше after_dt."""
-    if len(indices) == 0:
-        return indices
-
-    after_utc = after_dt.astimezone(timezone.utc) if after_dt.tzinfo else after_dt.replace(tzinfo=timezone.utc)
-
-    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
-        after_np = np.datetime64(after_utc.replace(tzinfo=None), "ms")
-        t_ms = times[indices].astype("datetime64[ms]")
-        return indices[t_ms > after_np]
-
-    keep: list[int] = []
-    for idx in indices:
-        t = times[int(idx)]
-        if not isinstance(t, datetime):
-            t = datetime.fromisoformat(str(t))
-        if t.tzinfo is None:
-            t = t.replace(tzinfo=timezone.utc)
-        else:
-            t = t.astimezone(timezone.utc)
-        if t > after_utc:
-            keep.append(int(idx))
-    return np.array(keep, dtype=indices.dtype)
-
-
 def _times_ms(times: np.ndarray | list[datetime], valid_indices: np.ndarray) -> np.ndarray:
     if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
         return times[valid_indices].astype("datetime64[ms]").astype(np.int64)
@@ -207,16 +141,23 @@ def _times_naive(times: np.ndarray | list[datetime], valid_indices: np.ndarray) 
     ]
 
 
-def _metrics_arrow(keys: list[str], raw: dict[str, np.ndarray], valid_indices: np.ndarray):
+def _metrics_arrow_chunk(
+    keys: list[str],
+    raw: dict[str, np.ndarray],
+    valid_indices: np.ndarray,
+    start: int,
+    end: int,
+):
     import pyarrow as pa
 
-    n_valid = len(valid_indices)
+    idx = valid_indices[start:end]
+    n_chunk = len(idx)
     n_keys = len(keys)
-    offsets = np.arange(n_valid + 1, dtype=np.int32) * n_keys
-    key_arr = pa.array(keys * n_valid, type=pa.string())
-    flat = np.empty(n_valid * n_keys, dtype=np.float64)
+    offsets = np.arange(n_chunk + 1, dtype=np.int32) * n_keys
+    key_arr = pa.array(np.tile(keys, n_chunk), type=pa.string())
+    flat = np.empty(n_chunk * n_keys, dtype=np.float64)
     for i, key in enumerate(keys):
-        flat[i::n_keys] = np.ascontiguousarray(raw[key][valid_indices], dtype=np.float64)
+        flat[i::n_keys] = np.ascontiguousarray(raw[key][idx], dtype=np.float64)
     return pa.MapArray.from_arrays(offsets, key_arr, pa.array(flat, type=pa.float64()))
 
 
@@ -245,7 +186,7 @@ def save_indicator_values_fast(
     raw: dict[str, np.ndarray],
     valid_indices: np.ndarray,
     *,
-    batch_size: int = 100_000,
+    batch_size: int = 50_000,
 ) -> int:
     """Высокоскоростная пакетная запись значений индикаторов в TrB.indicator_values."""
     n_valid = len(valid_indices)
@@ -258,27 +199,38 @@ def save_indicator_values_fast(
 
     ensure_param_registered(client, param_hash_val, indicator, params_json, keys)
 
+    time_ms_all = _times_ms(times, valid_indices)
+
     try:
         import pyarrow as pa
 
-        time_arr = pa.Array.from_buffers(
-            pa.timestamp("ms"),
-            n_valid,
-            [None, pa.py_buffer(_times_ms(times, valid_indices))],
-        )
-        table = pa.Table.from_arrays(
-            [
-                pa.array(np.full(n_valid, interval, dtype=np.uint8)),
-                pa.repeat(indicator, n_valid),
-                pa.repeat(uid, n_valid),
-                pa.array(np.full(n_valid, param_hash_val, dtype=np.uint64)),
-                time_arr,
-                _metrics_arrow(keys, raw, valid_indices),
-            ],
-            names=VALUE_COLUMNS,
-        )
-        client.insert_arrow(VALUES_TABLE, table)
-        return n_valid
+        total_saved = 0
+        for offset in range(0, n_valid, batch_size):
+            chunk_end = min(offset + batch_size, n_valid)
+            chunk_len = chunk_end - offset
+
+            time_arr = pa.Array.from_buffers(
+                pa.timestamp("ms"),
+                chunk_len,
+                [None, pa.py_buffer(time_ms_all[offset:chunk_end])],
+            )
+            table = pa.Table.from_arrays(
+                [
+                    pa.array(np.full(chunk_len, interval, dtype=np.uint8)),
+                    pa.repeat(indicator, chunk_len),
+                    pa.repeat(uid, chunk_len),
+                    pa.array(np.full(chunk_len, param_hash_val, dtype=np.uint64)),
+                    time_arr,
+                    _metrics_arrow_chunk(keys, raw, valid_indices, offset, chunk_end),
+                ],
+                names=VALUE_COLUMNS,
+            )
+            client.insert_arrow(VALUES_TABLE, table)
+            total_saved += chunk_len
+            del table
+            del time_arr
+
+        return total_saved
     except Exception as exc:
         log.debug("PyArrow insert fallback to columnar insert: %s", exc)
 
@@ -380,29 +332,3 @@ def load_indicator_values_page(
         out.append({"time": t, "values": values})
 
     return out, has_more
-
-
-SETTINGS_COLUMNS = ["uid", "interval", "indicator", "params", "enabled"]
-
-
-def list_settings(client: Client) -> list[tuple[str, int, str, str, int]]:
-    result = client.query(
-        f"""
-        SELECT uid, interval, indicator, params, enabled
-        FROM {SETTINGS_TABLE}
-        FINAL
-        WHERE enabled = 1
-        ORDER BY indicator, interval, uid
-        """
-    )
-    rows = result.result_rows
-    return [(str(r[0]), int(r[1]), str(r[2]), str(r[3]), int(r[4])) for r in rows]
-
-
-def sync_settings(client: Client, rows: list[list], *, allow_empty: bool) -> int:
-    if not rows and not allow_empty:
-        raise ValueError("список целей пуст")
-    client.command(f"TRUNCATE TABLE {SETTINGS_TABLE}")
-    if rows:
-        client.insert(SETTINGS_TABLE, rows, column_names=SETTINGS_COLUMNS)
-    return len(rows)

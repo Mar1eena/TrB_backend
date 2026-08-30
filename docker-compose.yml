@@ -159,8 +159,8 @@ services:
         condition: service_healthy
     environment:
       - PORT=9093
+      - GRPC_WORKERS=4
       - CLICKHOUSE_URL_DOCKER=clickhouse-db:8123
-      - INDICATORS_CHUNK_BARS=40000
       - INDICATORS_INSERT_BATCH=8000
       - INDICATORS_MAX_RESPONSE_POINTS=500
       - INDICATORS_WARMUP_MULT=8
