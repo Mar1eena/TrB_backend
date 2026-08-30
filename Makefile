@@ -12,8 +12,6 @@ cmd_test = ./internal/services/test/cmd/main.go
 cmd_indicators = ./internal/services/indicators/main.py
 indicators_dockerfile = ./build/docker/services/indicators/Dockerfile
 TRB_PROTO_REF ?= main
-TRB_PROTO_VERSION ?= 1.0.34
-TRB_PROTO_SOURCE ?= pypi
 
 .PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db test services gene invest ver indicators
 
@@ -61,9 +59,7 @@ indicators:
 	python ${cmd_indicators}
 
 indicators-docker:
-	docker build -f ${indicators_dockerfile} . \
-		--build-context proto=../TrB_proto \
-		-t indicators:latest
+	docker build -f ${indicators_dockerfile} . -t indicators:latest
 
 ver:
 	go get github.com/Mar1eena/trb_proto@latest

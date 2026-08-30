@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import clickhouse_connect
     from clickhouse_connect.driver.client import Client
 
 log = logging.getLogger(__name__)
+
+_tls = threading.local()
 
 
 def _parse_host_port(raw: str) -> tuple[str, int]:
@@ -26,7 +28,7 @@ def _parse_host_port(raw: str) -> tuple[str, int]:
     return host, port
 
 
-def get_client() -> Client:
+def _create_client() -> Client:
     import clickhouse_connect
 
     addr = os.environ.get("CLICKHOUSE_URL_DOCKER") or os.environ.get("CLICKHOUSE_URL", "localhost:9000")
@@ -36,10 +38,40 @@ def get_client() -> Client:
     password = os.environ.get("CLICKHOUSE_PASSWORD", "default")
 
     log.info("ClickHouse: %s:%s db=%s", host, port, database)
-    return clickhouse_connect.get_client(
-        host=host,
-        port=port,
-        username=username,
-        password=password,
-        database=database,
-    )
+    compress = os.environ.get("CLICKHOUSE_COMPRESS", "lz4")
+    try:
+        return clickhouse_connect.get_client(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            database=database,
+            compress=compress,
+        )
+    except Exception:
+        return clickhouse_connect.get_client(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            database=database,
+        )
+
+
+def check_connection() -> None:
+    """Проверка доступности ClickHouse при старте."""
+    client = _create_client()
+    client.query("SELECT 1")
+
+
+def client_for_thread() -> Client:
+    """Отдельный клиент на поток: clickhouse-connect не поддерживает параллельные запросы."""
+    client = getattr(_tls, "client", None)
+    if client is None:
+        client = _create_client()
+        _tls.client = client
+    return client
+
+
+def get_client() -> Client:
+    return client_for_thread()

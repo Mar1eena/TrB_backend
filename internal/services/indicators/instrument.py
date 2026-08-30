@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-from collections import deque
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
+import numpy as np
 from clickhouse_connect.driver.client import Client
 from indicators import indicators_pb2 as pb
 
@@ -15,11 +15,10 @@ from calc import (
     _datetime_to_ts,
     compute_arrays,
     get_spec,
-    iter_valid_values,
 )
 from candles import as_utc, bar_seconds, load_ohlcv_paged, lookback_delta
 from registry import resolve_params
-from storage import new_value_row, save_value_rows, upsert_settings
+from storage import save_indicator_values_fast, upsert_settings
 
 log = logging.getLogger(__name__)
 
@@ -64,23 +63,23 @@ def compute_for_instrument(
     warmup = _warmup_bars(spec, params)
     lookback = lookback_delta(req.interval, warmup, warmup_mult=1)
 
-    page_bars = max(_env_int("INDICATORS_CHUNK_BARS", 40_000), 1_000)
-    insert_batch = max(_env_int("INDICATORS_INSERT_BATCH", 8_000), 500)
-    max_response = max(_env_int("INDICATORS_MAX_RESPONSE_POINTS", 500), 1)
-    page_td = timedelta(seconds=bar_seconds(req.interval) * page_bars)
+    insert_batch = max(_env_int("INDICATORS_INSERT_BATCH", 100_000), 500)
+    if req.HasField("max_response_points"):
+        max_response = req.max_response_points
+    else:
+        max_response = max(_env_int("INDICATORS_MAX_RESPONSE_POINTS", 50_000), 1)
 
     log.info(
-        "ComputeForInstrument uid=%s interval=%s warmup=%s page_bars=%s",
+        "ComputeForInstrument uid=%s interval=%s warmup=%s",
         uid,
         req.interval,
         warmup,
-        page_bars,
     )
 
     times, ohlcv = load_ohlcv_paged(
-        client, uid, req.interval, from_dt, to_dt, lookback, page_td
+        client, uid, req.interval, from_dt, to_dt, lookback
     )
-    if not times:
+    if len(times) == 0:
         raise ComputeError(
             f"нет свечей в TrB.hct для uid={uid} interval={req.interval} "
             f"в диапазоне {from_dt.isoformat()} — {to_dt.isoformat()}"
@@ -88,34 +87,66 @@ def compute_for_instrument(
 
     raw = compute_arrays(spec, params, times, ohlcv)
 
-    tail: deque[tuple] = deque(maxlen=max_response)
-    pending: list[list] = []
-    total = 0
+    keys = sorted(raw.keys())
+    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
+        from_np = np.datetime64((from_dt.astimezone(timezone.utc) if from_dt.tzinfo else from_dt).replace(tzinfo=None), "us")
+        to_np = np.datetime64((to_dt.astimezone(timezone.utc) if to_dt.tzinfo else to_dt).replace(tzinfo=None), "us")
+        valid_mask = (times >= from_np) & (times <= to_np)
+    else:
+        f_dt = from_dt if from_dt.tzinfo else from_dt.replace(tzinfo=timezone.utc)
+        t_dt = to_dt if to_dt.tzinfo else to_dt.replace(tzinfo=timezone.utc)
+        valid_mask = np.array(
+            [f_dt <= (t if t.tzinfo else t.replace(tzinfo=timezone.utc)) <= t_dt for t in times],
+            dtype=bool,
+        )
 
-    if req.persist:
-        upsert_settings(client, uid, req.interval, spec.name, params)
+    for k in keys:
+        valid_mask &= ~np.isnan(raw[k])
 
-    for t, values in iter_valid_values(times, raw, from_dt, to_dt):
-        total += 1
-        tail.append((t, values))
-        if req.persist:
-            pending.append(new_value_row(uid, req.interval, spec.name, params, t, values))
-            if len(pending) >= insert_batch:
-                save_value_rows(client, pending)
-                pending.clear()
-
-    if req.persist and pending:
-        save_value_rows(client, pending)
+    valid_indices = np.flatnonzero(valid_mask)
+    total = len(valid_indices)
 
     if total == 0:
         raise ComputeError("недостаточно свечей для расчёта индикатора на заданном диапазоне")
 
-    log.info("ComputeForInstrument готово points=%s response=%s persist=%s", total, len(tail), req.persist)
+    if req.persist:
+        upsert_settings(client, uid, req.interval, spec.name, params)
+        save_indicator_values_fast(
+            client,
+            uid=uid,
+            interval=req.interval,
+            indicator=spec.name,
+            params=params,
+            times=times,
+            raw=raw,
+            valid_indices=valid_indices,
+            batch_size=insert_batch,
+        )
 
-    resp = pb.ComputeResponse(type=req.type)
+    tail_indices = valid_indices[-max_response:] if max_response > 0 else np.array([], dtype=np.int64)
+    log.info("ComputeForInstrument готово points=%s response=%s persist=%s", total, len(tail_indices), req.persist)
+
+    resp = pb.ComputeResponse(type=req.type, total_points=total)
     resp.params.update({k: float(v) for k, v in params.items()})
-    for t, values in tail:
-        point = pb.IndicatorPoint(time=_datetime_to_ts(t))
-        point.values.update(values)
-        resp.points.append(point)
+
+    if max_response <= 0:
+        return resp
+
+    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
+        tail_sec = times[tail_indices].astype("datetime64[ms]").astype(np.int64) / 1000.0
+        for s, idx in zip(tail_sec, tail_indices):
+            dt_val = datetime.fromtimestamp(s, tz=timezone.utc)
+            point = pb.IndicatorPoint(time=_datetime_to_ts(dt_val))
+            for k in keys:
+                point.values[k] = float(raw[k][idx])
+            resp.points.append(point)
+    else:
+        for idx in tail_indices:
+            t = times[idx]
+            dt_val = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+            point = pb.IndicatorPoint(time=_datetime_to_ts(dt_val))
+            for k in keys:
+                point.values[k] = float(raw[k][idx])
+            resp.points.append(point)
+
     return resp

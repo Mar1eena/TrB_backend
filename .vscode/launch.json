@@ -13,6 +13,33 @@
             "cwd": "${workspaceFolder}"
         },
         {
+            "name": "TA-Lib: RSI Function API",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/internal/services/indicators/talib_sandbox/rsi_func.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/internal/services/indicators/talib_sandbox",
+            "justMyCode": false
+        },
+        {
+            "name": "TA-Lib: RSI Stream API",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/internal/services/indicators/talib_sandbox/rsi_stream.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/internal/services/indicators/talib_sandbox",
+            "justMyCode": false
+        },
+        {
+            "name": "TA-Lib: compare all",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/internal/services/indicators/talib_sandbox/compare_all.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/internal/services/indicators/talib_sandbox",
+            "justMyCode": false
+        },
+        {
             "name": "Historical Candle",
             "type": "go",
             "request": "launch",

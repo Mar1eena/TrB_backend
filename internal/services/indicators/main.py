@@ -10,8 +10,26 @@ from concurrent import futures
 import grpc
 from indicators import indicators_pb2_grpc
 
-from clickhouse_client import get_client
+from clickhouse_client import check_connection
 from servicer import IndicatorsServicer
+
+
+def _warmup_libs() -> None:
+    try:
+        import numpy as np
+        import talib
+
+        dummy = np.ones(50, dtype=np.float64)
+        talib.RSI(dummy, 14)
+        talib.MACD(dummy)
+        talib.BBANDS(dummy)
+    except Exception as exc:
+        logging.warning("Ошибка прогрева TA-Lib: %s", exc)
+
+    try:
+        import pyarrow  # noqa: F401
+    except ImportError:
+        pass
 
 
 def main() -> None:
@@ -19,21 +37,24 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    _warmup_libs()
     port = os.environ.get("PORT", "9093")
-    ch_client = None
+    ch_enabled = False
     try:
-        ch_client = get_client()
+        check_connection()
+        ch_enabled = True
     except Exception as exc:
         logging.warning("ClickHouse недоступен, ComputeForInstrument отключён: %s", exc)
 
+    workers = int(os.environ.get("GRPC_WORKERS", "8"))
     server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=2),
+        futures.ThreadPoolExecutor(max_workers=workers),
         options=[
-            ("grpc.max_send_message_length", 16 * 1024 * 1024),
+            ("grpc.max_send_message_length", 32 * 1024 * 1024),
             ("grpc.max_receive_message_length", 32 * 1024 * 1024),
         ],
     )
-    indicators_pb2_grpc.add_IndicatorsServicer_to_server(IndicatorsServicer(ch_client), server)
+    indicators_pb2_grpc.add_IndicatorsServicer_to_server(IndicatorsServicer(ch_enabled), server)
     listen = f"[::]:{port}"
     server.add_insecure_port(listen)
     server.start()

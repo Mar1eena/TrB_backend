@@ -153,8 +153,6 @@ services:
     build:
       context: .
       dockerfile: ./build/docker/services/indicators/Dockerfile
-      additional_contexts:
-        proto: ../TrB_proto
     command: ["python", "/app/main.py"]
     depends_on:
       clickhouse-db:

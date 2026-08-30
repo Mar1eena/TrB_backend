@@ -29,80 +29,133 @@ def candles_to_ohlcv(candles: list[pb.Candle]) -> tuple[list[datetime], dict[str
     if not candles:
         raise ComputeError("candles пуст")
 
-    times: list[datetime] = []
-    opens: list[float] = []
-    highs: list[float] = []
-    lows: list[float] = []
-    closes: list[float] = []
-    volumes: list[float] = []
+    n = len(candles)
+    times: list[datetime] = [None] * n
+    opens = np.empty(n, dtype=np.float64)
+    highs = np.empty(n, dtype=np.float64)
+    lows = np.empty(n, dtype=np.float64)
+    closes = np.empty(n, dtype=np.float64)
+    volumes = np.empty(n, dtype=np.float64)
 
-    for c in candles:
+    for i, c in enumerate(candles):
         if not c.HasField("time"):
             raise ComputeError("у каждой свечи должно быть поле time")
-        times.append(_ts_to_datetime(c.time))
-        opens.append(c.open)
-        highs.append(c.high)
-        lows.append(c.low)
-        closes.append(c.close)
-        volumes.append(c.volume)
+        times[i] = _ts_to_datetime(c.time)
+        opens[i] = c.open
+        highs[i] = c.high
+        lows[i] = c.low
+        closes[i] = c.close
+        volumes[i] = c.volume
 
     ohlcv = {
-        "open": np.array(opens, dtype=np.float64),
-        "high": np.array(highs, dtype=np.float64),
-        "low": np.array(lows, dtype=np.float64),
-        "close": np.array(closes, dtype=np.float64),
-        "volume": np.array(volumes, dtype=np.float64),
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "volume": volumes,
     }
     return times, ohlcv
 
 
 def iter_valid_values(
-    times: list[datetime],
+    times: list[datetime] | np.ndarray,
     raw: dict[str, np.ndarray],
     from_dt: datetime,
     to_dt: datetime,
 ):
-    for i, t in enumerate(times):
-        if t < from_dt or t > to_dt:
-            continue
-        values: dict[str, float] = {}
-        for key, arr in raw.items():
-            v = arr[i]
-            if v is not None and not np.isnan(v):
-                values[key] = float(v)
-        if values:
-            yield t, values
+    if not raw:
+        return
+
+    keys = list(raw.keys())
+    arrays = [raw[k] for k in keys]
+    n = len(arrays[0])
+    if n == 0:
+        return
+
+    valid = np.ones(n, dtype=bool)
+    for arr in arrays:
+        valid &= ~np.isnan(arr)
+
+    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
+        from_np = np.datetime64((from_dt.astimezone(timezone.utc) if from_dt.tzinfo else from_dt).replace(tzinfo=None), "us")
+        to_np = np.datetime64((to_dt.astimezone(timezone.utc) if to_dt.tzinfo else to_dt).replace(tzinfo=None), "us")
+        valid &= (times >= from_np) & (times <= to_np)
+        indices = np.flatnonzero(valid)
+        epoch_sec = times[indices].astype("datetime64[ms]").astype(np.int64) / 1000.0
+        for idx, s in zip(indices, epoch_sec):
+            t = datetime.fromtimestamp(s, tz=timezone.utc)
+            yield t, {k: float(arr[idx]) for k, arr in zip(keys, arrays)}
+    else:
+        indices = np.flatnonzero(valid)
+        f_dt = from_dt if from_dt.tzinfo else from_dt.replace(tzinfo=timezone.utc)
+        t_dt = to_dt if to_dt.tzinfo else to_dt.replace(tzinfo=timezone.utc)
+        for idx in indices:
+            t = times[idx]
+            dt_cmp = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+            if f_dt <= dt_cmp <= t_dt:
+                yield t, {k: float(arr[idx]) for k, arr in zip(keys, arrays)}
 
 
 def series_to_points(
-    times: list[datetime],
+    times: list[datetime] | np.ndarray,
     raw: dict[str, np.ndarray],
     *,
     from_dt: datetime | None = None,
     to_dt: datetime | None = None,
 ) -> list[pb.IndicatorPoint]:
-    points: list[pb.IndicatorPoint] = []
-    for i, t in enumerate(times):
-        if from_dt is not None and t < from_dt:
-            continue
-        if to_dt is not None and t > to_dt:
-            continue
-        values: dict[str, float] = {}
-        for key, arr in raw.items():
-            v = arr[i]
-            if v is not None and not np.isnan(v):
-                values[key] = float(v)
-        if values:
-            point = pb.IndicatorPoint(time=_datetime_to_ts(t))
-            point.values.update(values)
+    if not raw:
+        return []
+
+    keys = list(raw.keys())
+    arrays = [raw[k] for k in keys]
+    n = len(arrays[0])
+    if n == 0:
+        return []
+
+    valid = np.ones(n, dtype=bool)
+    for arr in arrays:
+        valid &= ~np.isnan(arr)
+
+    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
+        if from_dt is not None:
+            from_np = np.datetime64((from_dt.astimezone(timezone.utc) if from_dt.tzinfo else from_dt).replace(tzinfo=None), "us")
+            valid &= (times >= from_np)
+        if to_dt is not None:
+            to_np = np.datetime64((to_dt.astimezone(timezone.utc) if to_dt.tzinfo else to_dt).replace(tzinfo=None), "us")
+            valid &= (times <= to_np)
+
+        indices = np.flatnonzero(valid)
+        epoch_sec = times[indices].astype("datetime64[ms]").astype(np.int64) / 1000.0
+        points: list[pb.IndicatorPoint] = []
+        for idx, s in zip(indices, epoch_sec):
+            dt_val = datetime.fromtimestamp(s, tz=timezone.utc)
+            point = pb.IndicatorPoint(time=_datetime_to_ts(dt_val))
+            point.values.update({k: float(arr[idx]) for k, arr in zip(keys, arrays)})
             points.append(point)
-    return points
+        return points
+    else:
+        indices = np.flatnonzero(valid)
+        points: list[pb.IndicatorPoint] = []
+        f_dt = (from_dt if from_dt.tzinfo else from_dt.replace(tzinfo=timezone.utc)) if from_dt else None
+        t_dt = (to_dt if to_dt.tzinfo else to_dt.replace(tzinfo=timezone.utc)) if to_dt else None
+
+        for idx in indices:
+            t = times[idx]
+            dt_cmp = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+            if f_dt is not None and dt_cmp < f_dt:
+                continue
+            if t_dt is not None and dt_cmp > t_dt:
+                continue
+            point = pb.IndicatorPoint(time=_datetime_to_ts(t))
+            point.values.update({k: float(arr[idx]) for k, arr in zip(keys, arrays)})
+            points.append(point)
+        return points
 
 
 def compute_arrays(
     spec: IndicatorSpec,
     params: dict[str, float],
-    times: list[datetime],
+    times: list[datetime] | np.ndarray,
     ohlcv: dict[str, np.ndarray],
 ) -> dict[str, np.ndarray]:
     min_bars = max(spec.min_bars, int(params.get("period", spec.min_bars)))
