@@ -14,11 +14,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && apt-get -qq update -y \
     && apt-get -qq install --no-install-recommends -y curl
 COPY --chmod=777 "$ENVOY_CONFIG" /etc/envoy/envoy.yaml
-RUN mkdir -p /etc/envoy/protos \
-    && curl -fsSL \
-      "https://raw.githubusercontent.com/Mar1eena/TrB_proto/${TRB_PROTO_REF}/gen/desc/trb_protos.pb" \
-      -o /etc/envoy/protos/trb_protos.pb \
-    && test -s /etc/envoy/protos/trb_protos.pb
+COPY configs/envoy/protos/trb_protos.pb /etc/envoy/protos/trb_protos.pb
+RUN test -s /etc/envoy/protos/trb_protos.pb
 CMD ["/usr/local/bin/envoy", "-c", "/etc/envoy/envoy.yaml"]
 
 FROM envoy-base AS envoy-admin

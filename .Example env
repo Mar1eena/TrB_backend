@@ -73,6 +73,11 @@ POSTGRE_API_URL=localhost:9091
 POSTGRE_API_URL_DOCKER=postgre:9091
 CLICKHOUSE_API_URL=localhost:9091
 CLICKHOUSE_API_URL_DOCKER=clickhouse:9091
+INDICATORS_API_URL=localhost:9093
+INDICATORS_API_URL_DOCKER=indicators:9093
+TRB_PROTO_VERSION=1.0.34
+# pypi — после make rel в TrB_proto; git — до первой публикации на PyPI
+TRB_PROTO_SOURCE=pypi
 
 #Historic candle service
 INTERVAL_UPDATE_HC = 30 # интервал обновления свечей в секундах

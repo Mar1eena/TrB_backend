@@ -181,6 +181,20 @@ static_resources:
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
+                            prefix: /trb.indicators.v1.Indicators
+                          route:
+                            cluster: indicators
+                            timeout: 300s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
+                            prefix: /v1/indicators
+                          route:
+                            cluster: indicators
+                            timeout: 300s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
                             prefix: /clickhouse.grpc.ClickHouse
                           route:
                             cluster: clickhouse_grpc
@@ -210,6 +224,7 @@ static_resources:
                         - trb.test.v1.Test
                         - trb.clickhouse.v1.ClickHouse_Admin
                         - trb.clickhouse.v1.ClickHouse
+                        - trb.indicators.v1.Indicators
                       print_options:
                         add_whitespace: true
                         always_print_primitive_fields: true
@@ -320,6 +335,25 @@ static_resources:
                     socket_address:
                       address: clickhouse
                       port_value: 9091
+    - name: indicators
+      connect_timeout: 0.25s
+      lb_policy: ROUND_ROBIN
+      dns_lookup_family: V4_ONLY
+      type: STRICT_DNS
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: indicators
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: indicators
+                      port_value: 9093
     - name: clickhouse_grpc
       connect_timeout: 0.25s
       lb_policy: ROUND_ROBIN

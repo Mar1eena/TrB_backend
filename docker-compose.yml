@@ -146,6 +146,51 @@ services:
         reservations:
           memory: 64M
 
+  indicators:
+    <<: [*services-config]
+    container_name: trb-indicators
+    image: indicators:latest
+    build:
+      context: .
+      dockerfile: ./build/docker/services/indicators/Dockerfile
+      additional_contexts:
+        proto: ../TrB_proto
+    command: ["python", "/app/main.py"]
+    depends_on:
+      clickhouse-db:
+        condition: service_healthy
+    environment:
+      - PORT=9093
+      - CLICKHOUSE_URL_DOCKER=clickhouse-db:8123
+      - INDICATORS_CHUNK_BARS=40000
+      - INDICATORS_INSERT_BATCH=8000
+      - INDICATORS_MAX_RESPONSE_POINTS=500
+      - INDICATORS_WARMUP_MULT=8
+      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-TrB}
+      - CLICKHOUSE_USERNAME=${CLICKHOUSE_USERNAME:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-default}
+    ports:
+      - "9093:9093"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 2048M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import grpc; ch=grpc.insecure_channel('127.0.0.1:9093'); grpc.channel_ready_future(ch).result(timeout=5)",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
   clickhouse:
     <<: [*services-config]
     container_name: trb-clickhouse
@@ -169,7 +214,6 @@ services:
         ENVOY_IMAGE: ${ENVOY_IMAGE:-envoyproxy/envoy}
         ENVOY_VARIANT: ${ENVOY_VARIANT:-v1.36.4}
         ENVOY_CONFIG: ./configs/envoy/envoy.yaml
-        TRB_PROTO_REF: ${TRB_PROTO_REF:-main}
     restart: unless-stopped
     environment:
       - KAFKA_BROKERS_ADDRESS
@@ -179,11 +223,13 @@ services:
       - '9901:9901'
     volumes:
       - ./configs/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ../TrB_proto/gen/desc/trb_protos.pb:/etc/envoy/protos/trb_protos.pb:ro
     depends_on:
       - nats
       - postgre
       - clickhouse
       - invest
+      - indicators
     deploy:
       resources:
         limits:

@@ -4,3 +4,4 @@
 volumes
 historical_candle
 backups
+configs/envoy/protos/trb_protos.pb

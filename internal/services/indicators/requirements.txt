@@ -1,0 +1,6 @@
+# proto: pip install trb-proto (версия задаётся в Docker через TRB_PROTO_VERSION)
+grpcio>=1.60.0
+numpy>=1.26.0
+TA-Lib>=0.4.28
+protobuf>=4.25.0
+clickhouse-connect>=0.7.0

@@ -4,8 +4,8 @@ github.com/ClickHouse/ch-go v0.71.0 h1:bUdZ/EZj/LcVHsMqaRUP2holqygrPWQKeMjc6nZoy
 github.com/ClickHouse/ch-go v0.71.0/go.mod h1:NwbNc+7jaqfY58dmdDUbG4Jl22vThgx1cYjBw0vtgXw=
 github.com/ClickHouse/clickhouse-go/v2 v2.46.0 h1:s3eRy+hYmu5uzotB6ZhDofgHu8kDgGN/fpmjxRkqSpk=
 github.com/ClickHouse/clickhouse-go/v2 v2.46.0/go.mod h1:giJfUVlMkcfUEPVfRpt51zZaGEx9i17gCos8gBl392c=
-github.com/Mar1eena/trb_proto v1.0.33 h1:zY5KzID/cKDEQeSSdFXxOz5l7Byxc92WirD5U26u5/A=
-github.com/Mar1eena/trb_proto v1.0.33/go.mod h1:ICZoJsp90Th+jfCNfJdXWkcL+N/JvIbI7h2oKzBeCpo=
+github.com/Mar1eena/trb_proto v1.0.40 h1:0lfDW1b29YFur0/iTYfHp796rK90yc1f2c/wz9MPT1Q=
+github.com/Mar1eena/trb_proto v1.0.40/go.mod h1:ICZoJsp90Th+jfCNfJdXWkcL+N/JvIbI7h2oKzBeCpo=
 github.com/andybalholm/brotli v1.2.1 h1:R+f5xP285VArJDRgowrfb9DqL18yVK0gKAW/F+eTWro=
 github.com/andybalholm/brotli v1.2.1/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
