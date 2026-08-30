@@ -20,6 +20,7 @@ from storage import (
     _as_metrics_dict,
     decode_value,
     encode_value,
+    indices_after_time,
     new_value_row,
     param_hash_64,
     params_to_json,
@@ -210,6 +211,21 @@ def test_as_metrics_dict() -> None:
     assert _as_metrics_dict(None) == {}
 
 
+def test_indices_after_time() -> None:
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    times_list = [start + timedelta(minutes=i) for i in range(10)]
+    times_np = np.datetime64("2025-01-01T00:00:00.000") + np.arange(10) * np.timedelta64(1, "m")
+    indices = np.arange(10)
+
+    after = start + timedelta(minutes=4)
+    got_list = indices_after_time(times_list, indices, after)
+    got_np = indices_after_time(times_np, indices, after)
+    assert list(got_list) == [5, 6, 7, 8, 9]
+    assert list(got_np) == [5, 6, 7, 8, 9]
+    assert list(indices_after_time(times_np, indices, start + timedelta(minutes=20))) == []
+    assert list(indices_after_time(times_np, np.array([1, 3, 7]), after)) == [7]
+
+
 if __name__ == "__main__":
     test_rsi_20_vs_40_same_prefix()
     test_paged_concat_one_ema_matches_full()
@@ -220,4 +236,5 @@ if __name__ == "__main__":
     test_all_registry_indicators()
     test_param_hash_64()
     test_as_metrics_dict()
+    test_indices_after_time()
     print("ok")

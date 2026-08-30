@@ -79,14 +79,7 @@ def chunk_windows(
     return windows
 
 
-def _fetch_ohlcv_rows(
-    client: Client,
-    uid: str,
-    interval: int,
-    load_from: datetime,
-    to_dt: datetime,
-):
-    query = """
+HCT_OHLCV_QUERY = """
 SELECT
     time,
     open,
@@ -97,12 +90,22 @@ SELECT
 FROM TrB.hct FINAL
 WHERE uid = {uid:String}
     AND interval = {interval:Int32}
+    AND is_complete = true
     AND time >= {load_from:DateTime64(6)}
     AND time <= {to_dt:DateTime64(6)}
 ORDER BY time ASC
 """
+
+
+def _fetch_ohlcv_rows(
+    client: Client,
+    uid: str,
+    interval: int,
+    load_from: datetime,
+    to_dt: datetime,
+):
     return client.query(
-        query,
+        HCT_OHLCV_QUERY,
         parameters={
             "uid": uid,
             "interval": interval,
@@ -120,23 +123,8 @@ def load_ohlcv(
     to_dt: datetime,
     lookback: timedelta,
 ) -> tuple[np.ndarray | list[datetime], dict[str, np.ndarray]]:
-    """Высокоскоростная загрузка OHLCV из TrB.hct через NumPy без построчной конвертации в Python."""
+    """Высокоскоростная загрузка закрытых свечей (is_complete) из TrB.hct."""
     load_from = from_dt - lookback
-    query = """
-SELECT
-    time,
-    open,
-    high,
-    low,
-    close,
-    volume
-FROM TrB.hct FINAL
-WHERE uid = {uid:String}
-    AND interval = {interval:Int32}
-    AND time >= {load_from:DateTime64(6)}
-    AND time <= {to_dt:DateTime64(6)}
-ORDER BY time ASC
-"""
     parameters = {
         "uid": uid,
         "interval": interval,
@@ -145,7 +133,7 @@ ORDER BY time ASC
     }
 
     try:
-        np_res = client.query_np(query, parameters=parameters)
+        np_res = client.query_np(HCT_OHLCV_QUERY, parameters=parameters)
         if len(np_res) == 0:
             return [], {}
 
@@ -160,7 +148,7 @@ ORDER BY time ASC
         return times, ohlcv
     except Exception as exc:
         log.debug("load_ohlcv query_np fallback to client.query: %s", exc)
-        result = client.query(query, parameters=parameters)
+        result = client.query(HCT_OHLCV_QUERY, parameters=parameters)
         rows = result.result_rows
         if not rows:
             return [], {}

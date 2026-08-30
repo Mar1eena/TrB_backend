@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 SETTINGS_TABLE = "indicator_settings"
 VALUES_TABLE = "indicator_values"
+VALUES_AGG_TABLE = "indicator_values_agg"
 REGISTRY_TABLE = "indicator_param_registry"
 
 # fixed-point в legacy таблицах
@@ -112,6 +113,76 @@ def upsert_settings(
         [[uid, interval, indicator, params_to_json(params), 1]],
         column_names=["uid", "interval", "indicator", "params", "enabled"],
     )
+
+
+def get_max_stored_time(
+    client: Client,
+    *,
+    uid: str,
+    interval: int,
+    indicator: str,
+    param_hash: int,
+) -> datetime | None:
+    """Последняя сохранённая отметка времени серии из TrB.indicator_values_agg."""
+    result = client.query(
+        f"""
+        SELECT maxMerge(max_time) AS max_time
+        FROM {VALUES_AGG_TABLE}
+        WHERE interval = {{interval:UInt8}}
+          AND indicator = {{indicator:String}}
+          AND uid = {{uid:String}}
+          AND param_hash = {{hash:UInt64}}
+        """,
+        parameters={
+            "uid": uid,
+            "interval": interval,
+            "indicator": indicator,
+            "hash": param_hash,
+        },
+    )
+    if not result.result_rows:
+        return None
+    raw = result.result_rows[0][0]
+    if raw is None:
+        return None
+    t = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    else:
+        t = t.astimezone(timezone.utc)
+    if t.year <= 1970:
+        return None
+    return t
+
+
+def indices_after_time(
+    times: np.ndarray | list[datetime],
+    indices: np.ndarray,
+    after_dt: datetime,
+) -> np.ndarray:
+    """Индексы из `indices`, у которых time строго больше after_dt."""
+    if len(indices) == 0:
+        return indices
+
+    after_utc = after_dt.astimezone(timezone.utc) if after_dt.tzinfo else after_dt.replace(tzinfo=timezone.utc)
+
+    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
+        after_np = np.datetime64(after_utc.replace(tzinfo=None), "ms")
+        t_ms = times[indices].astype("datetime64[ms]")
+        return indices[t_ms > after_np]
+
+    keep: list[int] = []
+    for idx in indices:
+        t = times[int(idx)]
+        if not isinstance(t, datetime):
+            t = datetime.fromisoformat(str(t))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        else:
+            t = t.astimezone(timezone.utc)
+        if t > after_utc:
+            keep.append(int(idx))
+    return np.array(keep, dtype=indices.dtype)
 
 
 def _times_ms(times: np.ndarray | list[datetime], valid_indices: np.ndarray) -> np.ndarray:

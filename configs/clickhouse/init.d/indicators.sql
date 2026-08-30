@@ -39,3 +39,34 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(time)
 ORDER BY (interval, indicator, uid, param_hash, time)
 SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS TrB.indicator_values_agg
+(
+    interval UInt8 CODEC(Delta(1), ZSTD(1)),
+    indicator LowCardinality(String) CODEC(ZSTD(1)),
+    uid String CODEC(ZSTD(1)),
+    param_hash UInt64 CODEC(ZSTD(1)),
+    log_date Date CODEC(DoubleDelta, ZSTD(1)),
+    min_time AggregateFunction(min, DateTime64(3)) CODEC(ZSTD(1)),
+    max_time AggregateFunction(max, DateTime64(3)) CODEC(ZSTD(1)),
+    count_indicators AggregateFunction(count, UInt64) CODEC(ZSTD(1))
+)
+ENGINE = AggregatingMergeTree
+PARTITION BY toYYYYMM(log_date)
+ORDER BY (interval, indicator, uid, param_hash)
+SETTINGS index_granularity = 8192;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS TrB.indicator_values_agg_mv
+TO TrB.indicator_values_agg
+AS
+SELECT
+    interval,
+    indicator,
+    uid,
+    param_hash,
+    toDate(time) AS log_date,
+    minState(time) AS min_time,
+    maxState(time) AS max_time,
+    countState() AS count_indicators
+FROM TrB.indicator_values
+GROUP BY interval, indicator, uid, param_hash, log_date;

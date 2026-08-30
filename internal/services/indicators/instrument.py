@@ -18,7 +18,14 @@ from calc import (
 )
 from candles import as_utc, bar_seconds, load_ohlcv_paged, lookback_delta
 from registry import resolve_params
-from storage import save_indicator_values_fast, upsert_settings
+from storage import (
+    get_max_stored_time,
+    indices_after_time,
+    param_hash_64,
+    params_to_json,
+    save_indicator_values_fast,
+    upsert_settings,
+)
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +118,22 @@ def compute_for_instrument(
 
     if req.persist:
         upsert_settings(client, uid, req.interval, spec.name, params)
+        persist_indices = valid_indices
+        max_stored = get_max_stored_time(
+            client,
+            uid=uid,
+            interval=req.interval,
+            indicator=spec.name,
+            param_hash=param_hash_64(spec.name, params_to_json(params)),
+        )
+        if max_stored is not None:
+            persist_indices = indices_after_time(times, valid_indices, max_stored)
+            log.info(
+                "ComputeForInstrument persist skip_until=%s new_points=%s / %s",
+                max_stored.isoformat(),
+                len(persist_indices),
+                total,
+            )
         save_indicator_values_fast(
             client,
             uid=uid,
@@ -119,7 +142,7 @@ def compute_for_instrument(
             params=params,
             times=times,
             raw=raw,
-            valid_indices=valid_indices,
+            valid_indices=persist_indices,
             batch_size=insert_batch,
         )
 
