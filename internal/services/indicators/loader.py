@@ -1,4 +1,4 @@
-"""Чтение значений индикаторов из TrB.indicator_values_v2."""
+"""Чтение значений индикаторов из TrB.indicator_values."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from indicators import indicators_pb2 as pb
 
 from calc import ComputeError, _datetime_to_ts, get_spec
 from registry import resolve_params
-from storage import get_value_keys, load_indicator_values_page, param_hash_64, params_to_json
+from storage import load_indicator_values_page, param_hash_64, params_to_json
 
 if TYPE_CHECKING:
     from clickhouse_connect.driver.client import Client
@@ -44,10 +44,6 @@ def list_indicator_values(
     if req.HasField("after"):
         after_dt = _as_utc(req.after.ToDatetime())
 
-    value_keys = get_value_keys(client, param_hash_val)
-    if not value_keys:
-        value_keys = _default_value_keys(spec.name)
-
     rows, has_more = load_indicator_values_page(
         client,
         uid=uid,
@@ -56,7 +52,6 @@ def list_indicator_values(
         param_hash=param_hash_val,
         from_dt=from_dt,
         to_dt=to_dt,
-        value_keys=value_keys,
         limit=limit,
         after_dt=after_dt,
     )
@@ -77,14 +72,3 @@ def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
-
-
-def _default_value_keys(indicator: str) -> list[str]:
-    defaults: dict[str, list[str]] = {
-        "RSI": ["value"],
-        "SMA": ["value"],
-        "EMA": ["value"],
-        "MACD": ["hist", "signal", "value"],
-        "BB": ["lower", "middle", "upper"],
-    }
-    return defaults.get(indicator, ["value"])

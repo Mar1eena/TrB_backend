@@ -17,12 +17,12 @@ from calc import candles_to_ohlcv, compute, compute_arrays, get_spec, iter_valid
 from candles import chunk_windows, concat_ohlcv
 from registry import REGISTRY, resolve_params
 from storage import (
+    _as_metrics_dict,
     decode_value,
     encode_value,
     new_value_row,
     param_hash_64,
     params_to_json,
-    save_indicator_values_fast,
     values_to_arrays,
 )
 
@@ -203,6 +203,13 @@ def test_param_hash_64() -> None:
     assert h1 == param_hash_64("RSI", '{"period":14.0}')
 
 
+def test_as_metrics_dict() -> None:
+    assert _as_metrics_dict({"value": 54.3, "signal": 1.2}) == {"value": 54.3, "signal": 1.2}
+    assert _as_metrics_dict([("hist", 0.5), ("value", 1.0)]) == {"hist": 0.5, "value": 1.0}
+    assert _as_metrics_dict({}) == {}
+    assert _as_metrics_dict(None) == {}
+
+
 if __name__ == "__main__":
     test_rsi_20_vs_40_same_prefix()
     test_paged_concat_one_ema_matches_full()
@@ -212,4 +219,5 @@ if __name__ == "__main__":
     test_array_value_row()
     test_all_registry_indicators()
     test_param_hash_64()
+    test_as_metrics_dict()
     print("ok")

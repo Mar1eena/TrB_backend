@@ -1,4 +1,4 @@
-"""Запись настроек, реестра параметров и значений индикаторов (v2) в ClickHouse."""
+"""Запись настроек, реестра параметров и значений индикаторов в ClickHouse."""
 
 from __future__ import annotations
 
@@ -16,23 +16,19 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 SETTINGS_TABLE = "indicator_settings"
-VALUES_V2_TABLE = "indicator_values_v2"
+VALUES_TABLE = "indicator_values"
 REGISTRY_TABLE = "indicator_param_registry"
 
 # fixed-point в legacy таблицах
 VALUE_SCALE = 1_000_000
 
-VALUE_V2_COLUMNS = [
-    "uid",
+VALUE_COLUMNS = [
     "interval",
     "indicator",
+    "uid",
     "param_hash",
     "time",
-    "v0",
-    "v1",
-    "v2",
-    "v3",
-    "v4",
+    "metrics",
 ]
 
 # Кэш зарегистрированных параметров в рамках процесса
@@ -118,6 +114,56 @@ def upsert_settings(
     )
 
 
+def _times_ms(times: np.ndarray | list[datetime], valid_indices: np.ndarray) -> np.ndarray:
+    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
+        return times[valid_indices].astype("datetime64[ms]").astype(np.int64)
+    return np.array(
+        [
+            int((t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)).timestamp() * 1000)
+            for t in (times[i] for i in valid_indices)
+        ],
+        dtype=np.int64,
+    )
+
+
+def _times_naive(times: np.ndarray | list[datetime], valid_indices: np.ndarray) -> list[datetime]:
+    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
+        epoch_sec = times[valid_indices].astype("datetime64[ms]").astype(np.int64) / 1000.0
+        return [datetime.fromtimestamp(s, tz=timezone.utc).replace(tzinfo=None) for s in epoch_sec]
+    return [
+        times[i].replace(tzinfo=None) if hasattr(times[i], "replace") else times[i]
+        for i in valid_indices
+    ]
+
+
+def _metrics_arrow(keys: list[str], raw: dict[str, np.ndarray], valid_indices: np.ndarray):
+    import pyarrow as pa
+
+    n_valid = len(valid_indices)
+    n_keys = len(keys)
+    offsets = np.arange(n_valid + 1, dtype=np.int32) * n_keys
+    key_arr = pa.array(keys * n_valid, type=pa.string())
+    flat = np.empty(n_valid * n_keys, dtype=np.float64)
+    for i, key in enumerate(keys):
+        flat[i::n_keys] = np.ascontiguousarray(raw[key][valid_indices], dtype=np.float64)
+    return pa.MapArray.from_arrays(offsets, key_arr, pa.array(flat, type=pa.float64()))
+
+
+def _metrics_dicts(
+    keys: list[str],
+    raw: dict[str, np.ndarray],
+    valid_indices: np.ndarray,
+    start: int,
+    end: int,
+) -> list[dict[str, float]]:
+    idx = valid_indices[start:end]
+    cols = [np.ascontiguousarray(raw[key][idx], dtype=np.float64) for key in keys]
+    out: list[dict[str, float]] = []
+    for row_i in range(len(idx)):
+        out.append({key: float(cols[col_i][row_i]) for col_i, key in enumerate(keys)})
+    return out
+
+
 def save_indicator_values_fast(
     client: Client,
     uid: str,
@@ -130,7 +176,7 @@ def save_indicator_values_fast(
     *,
     batch_size: int = 100_000,
 ) -> int:
-    """Высокоскоростная пакетная запись значений индикаторов в TrB.indicator_values_v2."""
+    """Высокоскоростная пакетная запись значений индикаторов в TrB.indicator_values."""
     n_valid = len(valid_indices)
     if n_valid == 0:
         return 0
@@ -139,104 +185,64 @@ def save_indicator_values_fast(
     params_json = params_to_json(params)
     param_hash_val = param_hash_64(indicator, params_json)
 
-    # Регистрируем параметры в реестре
     ensure_param_registered(client, param_hash_val, indicator, params_json, keys)
-
-    # Подготовка float32 колонок для v0..v4
-    v_arrays: list[np.ndarray] = []
-    for idx in range(5):
-        if idx < len(keys):
-            v_arrays.append(np.ascontiguousarray(raw[keys[idx]][valid_indices], dtype=np.float32))
-        else:
-            v_arrays.append(np.zeros(n_valid, dtype=np.float32))
 
     try:
         import pyarrow as pa
 
-        v_arrow_cols = [
-            pa.Array.from_buffers(pa.float32(), n_valid, [None, pa.py_buffer(arr)])
-            for arr in v_arrays
-        ]
-
-        if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
-            time_ms = times[valid_indices].astype("datetime64[ms]").astype(np.int64)
-        else:
-            time_ms = np.array(
-                [
-                    int((t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)).timestamp() * 1000)
-                    for t in (times[i] for i in valid_indices)
-                ],
-                dtype=np.int64,
-            )
-
-        time_arr = pa.Array.from_buffers(pa.timestamp("ms"), n_valid, [None, pa.py_buffer(time_ms)])
-
+        time_arr = pa.Array.from_buffers(
+            pa.timestamp("ms"),
+            n_valid,
+            [None, pa.py_buffer(_times_ms(times, valid_indices))],
+        )
         table = pa.Table.from_arrays(
             [
-                pa.repeat(uid, n_valid),
                 pa.array(np.full(n_valid, interval, dtype=np.uint8)),
                 pa.repeat(indicator, n_valid),
+                pa.repeat(uid, n_valid),
                 pa.array(np.full(n_valid, param_hash_val, dtype=np.uint64)),
                 time_arr,
-                v_arrow_cols[0],
-                v_arrow_cols[1],
-                v_arrow_cols[2],
-                v_arrow_cols[3],
-                v_arrow_cols[4],
+                _metrics_arrow(keys, raw, valid_indices),
             ],
-            names=VALUE_V2_COLUMNS,
+            names=VALUE_COLUMNS,
         )
-
-        client.insert_arrow(VALUES_V2_TABLE, table)
+        client.insert_arrow(VALUES_TABLE, table)
         return n_valid
     except Exception as exc:
-        log.debug("PyArrow insert fallback to columnar insert for v2: %s", exc)
+        log.debug("PyArrow insert fallback to columnar insert: %s", exc)
 
-        if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
-            epoch_sec = times[valid_indices].astype("datetime64[ms]").astype(np.int64) / 1000.0
-            valid_times = [datetime.fromtimestamp(s, tz=timezone.utc).replace(tzinfo=None) for s in epoch_sec]
-        else:
-            valid_times = [
-                times[i].replace(tzinfo=None) if hasattr(times[i], "replace") else times[i]
-                for i in valid_indices
-            ]
-
+        valid_times = _times_naive(times, valid_indices)
         total_saved = 0
         for offset in range(0, n_valid, batch_size):
             chunk_end = min(offset + batch_size, n_valid)
             chunk_len = chunk_end - offset
             chunk_cols = [
-                [uid] * chunk_len,
                 np.full(chunk_len, interval, dtype=np.uint8),
                 [indicator] * chunk_len,
+                [uid] * chunk_len,
                 np.full(chunk_len, param_hash_val, dtype=np.uint64),
                 valid_times[offset:chunk_end],
-                v_arrays[0][offset:chunk_end],
-                v_arrays[1][offset:chunk_end],
-                v_arrays[2][offset:chunk_end],
-                v_arrays[3][offset:chunk_end],
-                v_arrays[4][offset:chunk_end],
+                _metrics_dicts(keys, raw, valid_indices, offset, chunk_end),
             ]
-            client.insert(VALUES_V2_TABLE, chunk_cols, column_names=VALUE_V2_COLUMNS, column_oriented=True)
+            client.insert(VALUES_TABLE, chunk_cols, column_names=VALUE_COLUMNS, column_oriented=True)
             total_saved += chunk_len
         return total_saved
 
 
-def get_value_keys(client: Client, param_hash: int) -> list[str]:
-    result = client.query(
-        f"""
-        SELECT value_keys
-        FROM {REGISTRY_TABLE}
-        FINAL
-        WHERE param_hash = {{hash:UInt64}}
-        LIMIT 1
-        """,
-        parameters={"hash": param_hash},
-    )
-    if not result.result_rows:
-        return []
-    keys = result.result_rows[0][0]
-    return [str(k) for k in keys]
+def _as_metrics_dict(raw) -> dict[str, float]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        items = raw.items()
+    else:
+        items = list(raw)
+    out: dict[str, float] = {}
+    for key, val in items:
+        try:
+            out[str(key)] = float(val)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def load_indicator_values_page(
@@ -248,11 +254,10 @@ def load_indicator_values_page(
     param_hash: int,
     from_dt: datetime,
     to_dt: datetime,
-    value_keys: list[str],
     limit: int,
     after_dt: datetime | None = None,
 ) -> tuple[list[dict], bool]:
-    """Постраничное чтение значений из indicator_values_v2."""
+    """Постраничное чтение значений из indicator_values."""
     from_naive = from_dt.astimezone(timezone.utc).replace(tzinfo=None)
     to_naive = to_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
@@ -273,12 +278,11 @@ def load_indicator_values_page(
 
     result = client.query(
         f"""
-        SELECT time, v0, v1, v2, v3, v4
-        FROM {VALUES_V2_TABLE}
-        FINAL
-        WHERE uid = {{uid:String}}
-          AND interval = {{interval:UInt8}}
+        SELECT time, metrics
+        FROM {VALUES_TABLE}
+        WHERE interval = {{interval:UInt8}}
           AND indicator = {{indicator:String}}
+          AND uid = {{uid:String}}
           AND param_hash = {{hash:UInt64}}
           AND time >= {{from_dt:DateTime64(3)}}
           AND time <= {{to_dt:DateTime64(3)}}
@@ -295,12 +299,8 @@ def load_indicator_values_page(
         rows_raw = rows_raw[:limit]
 
     out: list[dict] = []
-    for time_val, v0, v1, v2, v3, v4 in rows_raw:
-        vals = [v0, v1, v2, v3, v4]
-        values: dict[str, float] = {}
-        for idx, key in enumerate(value_keys):
-            if idx < len(vals):
-                values[key] = float(vals[idx])
+    for time_val, metrics in rows_raw:
+        values = _as_metrics_dict(metrics)
         if not values:
             continue
         t = time_val if isinstance(time_val, datetime) else datetime.fromisoformat(str(time_val))
