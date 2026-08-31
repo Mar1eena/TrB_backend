@@ -2,20 +2,31 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import grpc
 from indicators import indicators_pb2 as pb
 from indicators import indicators_pb2_grpc
 
 from calc import ComputeError, compute
-from clickhouse_client import client_for_thread
+from clickhouse_client import get_client
 from instrument import compute_for_instrument
 from loader import list_indicator_values
 from registry import REGISTRY
 
+if TYPE_CHECKING:
+    from clickhouse_connect.driver.client import Client
+
 
 class IndicatorsServicer(indicators_pb2_grpc.IndicatorsServicer):
-    def __init__(self, ch_enabled: bool = False) -> None:
+    def __init__(self, ch_enabled: bool = False, client: Client | None = None) -> None:
         self._ch_enabled = ch_enabled
+        self._client = client
+
+    def _get_ch_client(self) -> Client:
+        if self._client is not None:
+            return self._client
+        return get_client()
 
     def Compute(self, request: pb.ComputeRequest, context: grpc.ServicerContext) -> pb.ComputeResponse:
         try:
@@ -35,7 +46,7 @@ class IndicatorsServicer(indicators_pb2_grpc.IndicatorsServicer):
             context.set_details("ClickHouse не настроен (CLICKHOUSE_URL)")
             return pb.ComputeResponse()
         try:
-            return compute_for_instrument(client_for_thread(), request)
+            return compute_for_instrument(self._get_ch_client(), request)
         except ComputeError as exc:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details(str(exc))
@@ -72,7 +83,7 @@ class IndicatorsServicer(indicators_pb2_grpc.IndicatorsServicer):
             context.set_details("ClickHouse не настроен (CLICKHOUSE_URL)")
             return pb.ListIndicatorValuesResponse()
         try:
-            return list_indicator_values(client_for_thread(), request)
+            return list_indicator_values(self._get_ch_client(), request)
         except ComputeError as exc:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details(str(exc))

@@ -4,5 +4,4 @@ numpy>=1.26.0
 TA-Lib>=0.4.28
 protobuf>=4.25.0
 clickhouse-connect>=0.7.0
-clickhouse-driver>=0.2.9
 pyarrow>=14.0.0

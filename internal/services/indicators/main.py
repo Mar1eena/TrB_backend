@@ -11,7 +11,7 @@ import grpc
 from indicators import indicators_pb2_grpc
 
 import envutil
-from clickhouse_client import check_connection
+from clickhouse_client import close_client, init_client
 from servicer import IndicatorsServicer
 
 
@@ -43,9 +43,11 @@ def main() -> None:
     # Не брать общий PORT из .env (там 9091 для Go API). Envoy ждёт 9093.
     port = (os.environ.get("INDICATORS_PORT") or "9093").strip()
     ch_enabled = False
+    ch_client = None
     try:
-        check_connection()
+        ch_client = init_client()
         ch_enabled = True
+        logging.info("Постоянное подключение к ClickHouse успешно установлено")
     except Exception as exc:
         logging.warning("ClickHouse недоступен, ComputeForInstrument отключён: %s", exc)
 
@@ -57,13 +59,19 @@ def main() -> None:
             ("grpc.max_receive_message_length", 32 * 1024 * 1024),
         ],
     )
-    indicators_pb2_grpc.add_IndicatorsServicer_to_server(IndicatorsServicer(ch_enabled), server)
+    indicators_pb2_grpc.add_IndicatorsServicer_to_server(
+        IndicatorsServicer(ch_enabled=ch_enabled, client=ch_client),
+        server,
+    )
     # 0.0.0.0: Envoy ходит сюда через host.docker.internal (IPv4). [::] на Windows не dual-stack.
     listen = f"0.0.0.0:{port}"
     server.add_insecure_port(listen)
     server.start()
     logging.info("indicators слушает gRPC на %s", listen)
-    server.wait_for_termination()
+    try:
+        server.wait_for_termination()
+    finally:
+        close_client()
 
 
 if __name__ == "__main__":

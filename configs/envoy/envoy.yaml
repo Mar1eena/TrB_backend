@@ -150,36 +150,26 @@ static_resources:
                           route:
                             cluster: clickhouse
                             timeout: 60s
-                            request_mirror_policies:
-                              cluster: debuger_grpc
                         - match:
                             prefix: /trb.clickhouse.v1.ClickHouse
                           route:
                             cluster: clickhouse
                             timeout: 60s
-                            request_mirror_policies:
-                              cluster: debuger_grpc
                         - match:
                             prefix: /v1/clickhouse
                           route:
                             cluster: clickhouse
                             timeout: 60s
-                            request_mirror_policies:
-                              cluster: debuger_grpc
                         - match:
                             prefix: /v1/instruments
                           route:
                             cluster: clickhouse
                             timeout: 60s
-                            request_mirror_policies:
-                              cluster: debuger_grpc
                         - match:
                             prefix: /v1/historic-candles
                           route:
                             cluster: clickhouse
                             timeout: 60s
-                            request_mirror_policies:
-                              cluster: debuger_grpc
                         - match:
                             prefix: /trb.indicators.v1.Indicators
                           route:
@@ -321,15 +311,34 @@ static_resources:
       lb_policy: ROUND_ROBIN
       dns_lookup_family: V4_ONLY
       type: STRICT_DNS
+      common_lb_config:
+        healthy_panic_threshold:
+          value: 0
       typed_extension_protocol_options:
         envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
           "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
           explicit_http_config:
             http2_protocol_options: {}
+      health_checks:
+        - timeout: 0.5s
+          interval: 2s
+          no_traffic_interval: 1s
+          unhealthy_threshold: 1
+          healthy_threshold: 1
+          tcp_health_check: {}
       load_assignment:
         cluster_name: clickhouse
         endpoints:
-          - lb_endpoints:
+          # хост (VS Code): ответ идёт клиенту. контейнер — запасной, если 50051 молчит
+          - priority: 0
+            lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: host.docker.internal
+                      port_value: 50051
+          - priority: 1
+            lb_endpoints:
               - endpoint:
                   address:
                     socket_address:

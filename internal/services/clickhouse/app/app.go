@@ -82,15 +82,26 @@ func App() {
 	}()
 
 	port := env.Get("PORT")
-	if port == "" {
+	if !env.IsContainer() {
+		// Envoy зеркалирует gRPC на host.docker.internal:50051.
+		// PORT=9091 в .env — порт контейнеров, на хосте его не занимаем.
+		if p := env.Get("DEBUG_PORT"); p != "" {
+			port = p
+		} else if port == "" || port == "9091" {
+			port = "50051"
+		}
+	} else if port == "" {
 		port = "9091"
 	}
 
-	lis, err := net.Listen("tcp", ":"+port)
+	// 0.0.0.0: Envoy ходит сюда через host.docker.internal (IPv4).
+	// :port на Windows садится на [::] и не dual-stack.
+	addr := "0.0.0.0:" + port
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		l.Fatal().Err(err).Msg("не удалось начать прослушивание порта " + port)
+		l.Fatal().Err(err).Msg("не удалось начать прослушивание " + addr)
 	}
-	l.Info().Str("port", port).Msg("clickhouse слушает gRPC")
+	l.Info().Str("addr", addr).Msg("clickhouse слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
 	service := server.NewWithExtras(ch, l, extras, defaultName, infos...)

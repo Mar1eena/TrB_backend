@@ -292,12 +292,8 @@ def compute_for_instrument(
         max_response = req.max_response_points
     else:
         max_response = max(_env_int("INDICATORS_MAX_RESPONSE_POINTS", 50_000), 1)
-    t0 = time.monotonic()
     param_hash_val = param_hash_64(spec.name, params_to_json(params))
-    print(f"param_hash_64: {time.monotonic() - t0}")
-    t0 = time.monotonic()
     first_candle_time, last_candle_time = get_complete_candle_time_range(client, uid, req.interval)
-    print(f"get_complete_candle_time_range: {time.monotonic() - t0}")
     if last_candle_time is None:
         return _empty_response(req.type, params)
     
@@ -312,7 +308,6 @@ def compute_for_instrument(
     stored_ok = last_indicator_time is not None and last_indicator_time >= last_candle_time
     
     if req.persist and not stored_ok:
-        t0 = time.monotonic()
         _fill_missing(
             client,
             uid=uid,
@@ -327,7 +322,6 @@ def compute_for_instrument(
             fallback_from=from_dt,
         )
         stored_ok = True
-        print(time.monotonic() - t0)
 
     if stored_ok:
         if max_response <= 0:

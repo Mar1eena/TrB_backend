@@ -72,16 +72,16 @@ SELECT
 	volume_sell,
 	candle_source,
 	is_complete
-FROM TrB.hct FINAL
-WHERE uid = $1
-	AND interval = $2
-	AND time >= $3
+FROM TrB.hct
+WHERE interval = $1 
+    AND uid = $2
+    AND time >= $3
 	AND time <= $4
 ORDER BY time %s
 LIMIT $5`, order)
 
 	var rows []historicCandleRow
-	if err := s.db(ctx).Select(ctx, &rows, query, uid, req.GetInterval(), from, to, uint64(limit)); err != nil {
+	if err := s.db(ctx).Select(ctx, &rows, query, req.GetInterval(), uid, from, to, uint64(limit)); err != nil {
 		s.log.Error().Err(err).Str("uid", uid).Int32("interval", req.GetInterval()).Msg("не удалось загрузить свечи")
 		return nil, status.Errorf(codes.Internal, "не удалось загрузить свечи: %v", err)
 	}

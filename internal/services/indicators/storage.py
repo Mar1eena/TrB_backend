@@ -78,7 +78,6 @@ def get_max_stored_time(
     param_hash: int,
 ) -> datetime | None:
     """Последняя сохранённая отметка времени серии из TrB.indicator_values_agg."""
-    t0 = time.monotonic()
     result = client.query(
         f"""
         SELECT maxMerge(max_time) AS max_time
@@ -95,7 +94,6 @@ def get_max_stored_time(
             "hash": param_hash,
         },
     )
-    print(f"get_max_stored_time: {time.monotonic() - t0}")
     if not result.result_rows:
         return None
     raw = result.result_rows[0][0]
