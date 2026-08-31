@@ -19,7 +19,7 @@ from calc import (
     compute_arrays,
     get_spec,
 )
-from candles import as_utc, get_first_complete_candle_time, get_last_complete_candle_time, load_ohlcv, lookback_delta
+from candles import as_utc, get_complete_candle_time_range, load_ohlcv, lookback_delta
 from registry import resolve_params
 from storage import (
     get_max_stored_time,
@@ -50,10 +50,225 @@ def _warmup_bars(spec, params: dict[str, float]) -> int:
     return base * max(_env_int("INDICATORS_WARMUP_MULT", 8), 1)
 
 
+def _params_map(params: dict[str, float]) -> dict[str, float]:
+    return {k: float(v) for k, v in params.items()}
+
+
+def _empty_response(req_type: int, params: dict[str, float], total: int = 0) -> pb.ComputeResponse:
+    resp = pb.ComputeResponse(type=req_type, total_points=total)
+    resp.params.update(_params_map(params))
+    return resp
+
+
+def _response_from_rows(req_type: int, params: dict[str, float], rows: list[dict]) -> pb.ComputeResponse:
+    resp = pb.ComputeResponse(type=req_type, total_points=len(rows))
+    resp.params.update(_params_map(params))
+    for row in rows:
+        point = pb.IndicatorPoint(time=_datetime_to_ts(row["time"]))
+        for key, val in row["values"].items():
+            point.values[key] = float(val)
+        resp.points.append(point)
+    return resp
+
+
+def _valid_mask_for_range(
+    times: np.ndarray | list,
+    raw: dict[str, np.ndarray],
+    keys: list[str],
+    start_dt: datetime,
+    end_dt: datetime,
+    *,
+    start_exclusive: bool,
+) -> np.ndarray:
+    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
+        start_naive = (start_dt.astimezone(timezone.utc) if start_dt.tzinfo else start_dt).replace(tzinfo=None)
+        end_naive = (end_dt.astimezone(timezone.utc) if end_dt.tzinfo else end_dt).replace(tzinfo=None)
+        start_np = np.datetime64(start_naive, "us")
+        end_np = np.datetime64(end_naive, "us")
+        mask = (times > start_np) if start_exclusive else (times >= start_np)
+        mask &= times <= end_np
+    else:
+        start_aware = start_dt if start_dt.tzinfo else start_dt.replace(tzinfo=timezone.utc)
+        end_aware = end_dt if end_dt.tzinfo else end_dt.replace(tzinfo=timezone.utc)
+
+        def _as_aware(t: datetime) -> datetime:
+            return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+        if start_exclusive:
+            mask = np.array([_as_aware(t) > start_aware for t in times], dtype=bool)
+        else:
+            mask = np.array([_as_aware(t) >= start_aware for t in times], dtype=bool)
+        mask &= np.array([_as_aware(t) <= end_aware for t in times], dtype=bool)
+
+    for key in keys:
+        mask &= ~np.isnan(raw[key])
+    return mask
+
+
+def _points_from_arrays(
+    times: np.ndarray | list,
+    raw: dict[str, np.ndarray],
+    keys: list[str],
+    indices: np.ndarray,
+    req_type: int,
+    params: dict[str, float],
+    total: int,
+) -> pb.ComputeResponse:
+    resp = pb.ComputeResponse(type=req_type, total_points=total)
+    resp.params.update(_params_map(params))
+    if len(indices) == 0:
+        return resp
+
+    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
+        tail_ms = times[indices].astype("datetime64[ms]").astype(np.int64)
+        for ms_val, idx in zip(tail_ms, indices):
+            ts = Timestamp(seconds=int(ms_val // 1000), nanos=int((ms_val % 1000) * 1_000_000))
+            point = pb.IndicatorPoint(time=ts)
+            for key in keys:
+                point.values[key] = float(raw[key][idx])
+            resp.points.append(point)
+        return resp
+
+    for idx in indices:
+        t = times[idx]
+        dt_val = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        point = pb.IndicatorPoint(time=_datetime_to_ts(dt_val))
+        for key in keys:
+            point.values[key] = float(raw[key][idx])
+        resp.points.append(point)
+    return resp
+
+
+def _fill_missing(
+    client: Client,
+    *,
+    uid: str,
+    interval: int,
+    spec,
+    params: dict[str, float],
+    lookback,
+    insert_batch: int,
+    last_indicator_time: datetime | None,
+    first_candle_time: datetime | None,
+    last_candle_time: datetime,
+    fallback_from: datetime,
+) -> int:
+    """Досчитать и сохранить недостающий хвост до последней закрытой свечи."""
+    if last_indicator_time is not None:
+        calc_from = last_indicator_time
+        start_exclusive = True
+    else:
+        calc_from = first_candle_time or fallback_from
+        start_exclusive = False
+    calc_to = last_candle_time
+    if calc_to < calc_from:
+        return 0
+
+    log.info(
+        "ComputeForInstrument fill uid=%s interval=%s %s — %s (last_ind=%s)",
+        uid,
+        interval,
+        calc_from.isoformat(),
+        calc_to.isoformat(),
+        last_indicator_time.isoformat() if last_indicator_time else "None",
+    )
+
+    t0 = time.monotonic()
+    times, ohlcv = load_ohlcv(client, uid, interval, calc_from, calc_to, lookback)
+    t_load = time.monotonic() - t0
+    if len(times) == 0:
+        log.info("ComputeForInstrument fill uid=%s: нет свечей в дельте", uid)
+        return 0
+
+    log.info("ComputeForInstrument fill uid=%s bars=%s load=%.2fs", uid, len(times), t_load)
+
+    t0 = time.monotonic()
+    raw = compute_arrays(spec, params, times, ohlcv)
+    t_compute = time.monotonic() - t0
+    del ohlcv
+
+    keys = sorted(raw.keys())
+    start_dt = last_indicator_time if last_indicator_time is not None else calc_from
+    valid_mask = _valid_mask_for_range(
+        times, raw, keys, start_dt, calc_to, start_exclusive=start_exclusive
+    )
+    valid_indices = np.flatnonzero(valid_mask)
+    total = len(valid_indices)
+    if total == 0:
+        del raw
+        del times
+        gc.collect()
+        return 0
+
+    t0 = time.monotonic()
+    save_indicator_values_fast(
+        client,
+        uid=uid,
+        interval=interval,
+        indicator=spec.name,
+        params=params,
+        times=times,
+        raw=raw,
+        valid_indices=valid_indices,
+        batch_size=insert_batch,
+    )
+    log.info(
+        "ComputeForInstrument saved uid=%s rows=%s save=%.2fs compute=%.2fs",
+        uid,
+        total,
+        time.monotonic() - t0,
+        t_compute,
+    )
+    del raw
+    del times
+    gc.collect()
+    return total
+
+
+def _compute_ephemeral(
+    client: Client,
+    *,
+    uid: str,
+    interval: int,
+    spec,
+    params: dict[str, float],
+    lookback,
+    from_dt: datetime,
+    to_dt: datetime,
+    last_candle_time: datetime,
+    max_response: int,
+    req_type: int,
+) -> pb.ComputeResponse:
+    calc_to = min(to_dt, last_candle_time)
+    if calc_to < from_dt:
+        return _empty_response(req_type, params)
+
+    times, ohlcv = load_ohlcv(client, uid, interval, from_dt, calc_to, lookback)
+    if len(times) == 0:
+        raise ComputeError(
+            f"нет закрытых свечей в TrB.hct для uid={uid} interval={interval} "
+            f"в диапазоне {from_dt.isoformat()} — {calc_to.isoformat()}"
+        )
+
+    raw = compute_arrays(spec, params, times, ohlcv)
+    del ohlcv
+    keys = sorted(raw.keys())
+    valid_mask = _valid_mask_for_range(times, raw, keys, from_dt, calc_to, start_exclusive=False)
+    valid_indices = np.flatnonzero(valid_mask)
+    total = len(valid_indices)
+    tail = valid_indices[-max_response:] if max_response > 0 else np.array([], dtype=np.int64)
+    resp = _points_from_arrays(times, raw, keys, tail, req_type, params, total)
+    del raw
+    del times
+    gc.collect()
+    return resp
+
+
 def compute_for_instrument(
     client: Client,
     req: pb.ComputeForInstrumentRequest,
 ) -> pb.ComputeResponse:
+    
     uid = (req.uid or "").strip()
     if not uid:
         raise ComputeError("uid обязателен")
@@ -71,25 +286,21 @@ def compute_for_instrument(
     params = resolve_params(spec, dict(req.params))
     warmup = _warmup_bars(spec, params)
     lookback = lookback_delta(req.interval, warmup, warmup_mult=1)
-
+    
     insert_batch = max(_env_int("INDICATORS_INSERT_BATCH", 250_000), 500)
     if req.HasField("max_response_points"):
         max_response = req.max_response_points
     else:
         max_response = max(_env_int("INDICATORS_MAX_RESPONSE_POINTS", 50_000), 1)
-
+    t0 = time.monotonic()
     param_hash_val = param_hash_64(spec.name, params_to_json(params))
-
-    # 1. Дата последней закрытой свечи в TrB.hct
-    last_candle_time = get_last_complete_candle_time(client, uid, req.interval)
+    print(f"param_hash_64: {time.monotonic() - t0}")
+    t0 = time.monotonic()
+    first_candle_time, last_candle_time = get_complete_candle_time_range(client, uid, req.interval)
+    print(f"get_complete_candle_time_range: {time.monotonic() - t0}")
     if last_candle_time is None:
-        resp = pb.ComputeResponse(type=req.type, total_points=0)
-        resp.params.update({k: float(v) for k, v in params.items()})
-        return resp
-
-    first_candle_time = get_first_complete_candle_time(client, uid, req.interval)
-
-    # 2. Дата последнего сохранённого индикатора в TrB.indicator_values_agg
+        return _empty_response(req.type, params)
+    
     last_indicator_time = get_max_stored_time(
         client,
         uid=uid,
@@ -97,23 +308,30 @@ def compute_for_instrument(
         indicator=spec.name,
         param_hash=param_hash_val,
     )
-
-    # 3. Если индикатор уже рассчитан по последнюю свечу — не пересчитываем заново
-    if last_indicator_time is not None and last_indicator_time >= last_candle_time:
-        log.info(
-            "ComputeForInstrument uid=%s interval=%s up to date (indicator_max=%s >= candle_max=%s)",
-            uid,
-            req.interval,
-            last_indicator_time.isoformat(),
-            last_candle_time.isoformat(),
+    
+    stored_ok = last_indicator_time is not None and last_indicator_time >= last_candle_time
+    
+    if req.persist and not stored_ok:
+        t0 = time.monotonic()
+        _fill_missing(
+            client,
+            uid=uid,
+            interval=req.interval,
+            spec=spec,
+            params=params,
+            lookback=lookback,
+            insert_batch=insert_batch,
+            last_indicator_time=last_indicator_time,
+            first_candle_time=first_candle_time,
+            last_candle_time=last_candle_time,
+            fallback_from=from_dt,
         )
+        stored_ok = True
+        print(time.monotonic() - t0)
 
+    if stored_ok:
         if max_response <= 0:
-            resp = pb.ComputeResponse(type=req.type, total_points=0)
-            resp.params.update({k: float(v) for k, v in params.items()})
-            return resp
-
-        # Если запрошены точки для ответа — читаем напрямую из ClickHouse
+            return _empty_response(req.type, params)
         rows, _ = load_indicator_values_page(
             client,
             uid=uid,
@@ -124,147 +342,28 @@ def compute_for_instrument(
             to_dt=to_dt,
             limit=max_response,
         )
-        resp = pb.ComputeResponse(type=req.type, total_points=len(rows))
-        resp.params.update({k: float(v) for k, v in params.items()})
-        for r in rows:
-            pt = pb.IndicatorPoint(time=_datetime_to_ts(r["time"]))
-            for k, v in r["values"].items():
-                pt.values[k] = float(v)
-            resp.points.append(pt)
-        return resp
-
-    # 4. Вычисляем только недостающие индикаторы
-    if last_indicator_time is not None:
-        calc_from = last_indicator_time
-        calc_to = min(to_dt, last_candle_time)
-    else:
-        calc_from = from_dt
-        calc_to = min(to_dt, last_candle_time)
-        if first_candle_time is not None and calc_from < first_candle_time:
-            calc_from = first_candle_time
-
-    log.info(
-        "ComputeForInstrument delta uid=%s interval=%s calc_range=%s — %s (last_ind=%s last_candle=%s)",
-        uid,
-        req.interval,
-        calc_from.isoformat(),
-        calc_to.isoformat(),
-        last_indicator_time.isoformat() if last_indicator_time else "None",
-        last_candle_time.isoformat(),
-    )
-
-    t0 = time.monotonic()
-    times, ohlcv = load_ohlcv(
-        client, uid, req.interval, calc_from, calc_to, lookback
-    )
-    t_load = time.monotonic() - t0
-    if len(times) == 0:
-        if last_indicator_time is not None:
-            resp = pb.ComputeResponse(type=req.type, total_points=0)
-            resp.params.update({k: float(v) for k, v in params.items()})
-            return resp
-        raise ComputeError(
-            f"нет закрытых свечей в TrB.hct для uid={uid} interval={req.interval} "
-            f"в диапазоне {calc_from.isoformat()} — {calc_to.isoformat()}"
-        )
-
-    log.info(
-        "ComputeForInstrument loaded uid=%s bars=%s load=%.2fs",
-        uid,
-        len(times),
-        t_load,
-    )
-
-    t0 = time.monotonic()
-    raw = compute_arrays(spec, params, times, ohlcv)
-    t_compute = time.monotonic() - t0
-    del ohlcv
-
-    keys = sorted(raw.keys())
-    if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
-        if last_indicator_time is not None:
-            start_np = np.datetime64((last_indicator_time.astimezone(timezone.utc) if last_indicator_time.tzinfo else last_indicator_time).replace(tzinfo=None), "us")
-            valid_mask = (times > start_np)
-        else:
-            start_np = np.datetime64((from_dt.astimezone(timezone.utc) if from_dt.tzinfo else from_dt).replace(tzinfo=None), "us")
-            valid_mask = (times >= start_np)
-
-        to_np = np.datetime64((calc_to.astimezone(timezone.utc) if calc_to.tzinfo else calc_to).replace(tzinfo=None), "us")
-        valid_mask &= (times <= to_np)
-    else:
-        if last_indicator_time is not None:
-            start_dt = last_indicator_time if last_indicator_time.tzinfo else last_indicator_time.replace(tzinfo=timezone.utc)
-            valid_mask = np.array(
-                [(t if t.tzinfo else t.replace(tzinfo=timezone.utc)) > start_dt for t in times],
-                dtype=bool,
-            )
-        else:
-            start_dt = from_dt if from_dt.tzinfo else from_dt.replace(tzinfo=timezone.utc)
-            valid_mask = np.array(
-                [(t if t.tzinfo else t.replace(tzinfo=timezone.utc)) >= start_dt for t in times],
-                dtype=bool,
-            )
-
-        c_to_dt = calc_to if calc_to.tzinfo else calc_to.replace(tzinfo=timezone.utc)
-        valid_mask &= np.array(
-            [(t if t.tzinfo else t.replace(tzinfo=timezone.utc)) <= c_to_dt for t in times],
-            dtype=bool,
-        )
-
-    for k in keys:
-        valid_mask &= ~np.isnan(raw[k])
-
-    valid_indices = np.flatnonzero(valid_mask)
-    total = len(valid_indices)
-
-    if req.persist and total > 0:
-        t0 = time.monotonic()
-        save_indicator_values_fast(
-            client,
-            uid=uid,
-            interval=req.interval,
-            indicator=spec.name,
-            params=params,
-            times=times,
-            raw=raw,
-            valid_indices=valid_indices,
-            batch_size=insert_batch,
-        )
-        t_save = time.monotonic() - t0
         log.info(
-            "ComputeForInstrument saved uid=%s rows=%s save=%.2fs compute=%.2fs",
+            "ComputeForInstrument uid=%s interval=%s return stored points=%s persist=%s",
             uid,
-            total,
-            t_save,
-            t_compute,
+            req.interval,
+            len(rows),
+            req.persist,
         )
+        return _response_from_rows(req.type, params, rows)
 
-    tail_indices = valid_indices[-max_response:] if max_response > 0 else np.array([], dtype=np.int64)
-    log.info("ComputeForInstrument готово points=%s response=%s persist=%s", total, len(tail_indices), req.persist)
+    if max_response <= 0:
+        return _empty_response(req.type, params)
 
-    resp = pb.ComputeResponse(type=req.type, total_points=total)
-    resp.params.update({k: float(v) for k, v in params.items()})
-
-    if max_response > 0 and len(tail_indices) > 0:
-        if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
-            tail_ms = times[tail_indices].astype("datetime64[ms]").astype(np.int64)
-            for ms_val, idx in zip(tail_ms, tail_indices):
-                ts = Timestamp(seconds=int(ms_val // 1000), nanos=int((ms_val % 1000) * 1_000_000))
-                point = pb.IndicatorPoint(time=ts)
-                for k in keys:
-                    point.values[k] = float(raw[k][idx])
-                resp.points.append(point)
-        else:
-            for idx in tail_indices:
-                t = times[idx]
-                dt_val = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
-                point = pb.IndicatorPoint(time=_datetime_to_ts(dt_val))
-                for k in keys:
-                    point.values[k] = float(raw[k][idx])
-                resp.points.append(point)
-
-    del raw
-    del times
-    gc.collect()
-
-    return resp
+    return _compute_ephemeral(
+        client,
+        uid=uid,
+        interval=req.interval,
+        spec=spec,
+        params=params,
+        lookback=lookback,
+        from_dt=from_dt,
+        to_dt=to_dt,
+        last_candle_time=last_candle_time,
+        max_response=max_response,
+        req_type=req.type,
+    )

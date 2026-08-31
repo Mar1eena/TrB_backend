@@ -15,7 +15,13 @@ from indicators import indicators_pb2 as pb
 
 from calc import candles_to_ohlcv, compute, series_to_points
 from registry import REGISTRY, resolve_params
-from storage import _as_metrics_dict, _metrics_arrow_chunk, param_hash_64, params_to_json
+from storage import (
+    _as_metrics_dict,
+    _metrics_arrow_chunk,
+    insert_ranges,
+    param_hash_64,
+    params_to_json,
+)
 
 
 def _ts(dt: datetime) -> Timestamp:
@@ -151,6 +157,37 @@ def test_metrics_arrow_chunk_single_and_multi() -> None:
     assert chunk_multi.to_pylist()[-1] == [("lower", 9.0), ("middle", 10.0), ("upper", 11.0)]
 
 
+def test_insert_ranges_daily_history_under_partition_cap() -> None:
+    # ~30 лет дневных свечей — больше 100 месячных партиций, один batch_size их все вмещает.
+    start = np.datetime64("1996-01-01", "ms")
+    days = 365 * 30 + 8
+    time_ms = (start + np.arange(days).astype("timedelta64[D]")).astype("datetime64[ms]").astype(np.int64)
+
+    slices = insert_ranges(time_ms, batch_size=250_000, max_partitions=80)
+    assert slices[0][0] == 0
+    assert slices[-1][1] == days
+    covered = 0
+    for start_i, end_i in slices:
+        assert end_i > start_i
+        covered += end_i - start_i
+        months = (
+            time_ms[start_i:end_i]
+            .astype("datetime64[ms]")
+            .astype("datetime64[M]")
+            .astype(np.int64)
+        )
+        assert int(months[-1] - months[0] + 1) <= 80
+    assert covered == days
+    assert len(slices) >= 4
+
+
+def test_insert_ranges_respects_row_batch() -> None:
+    start = np.datetime64("2024-01-01", "ms")
+    time_ms = (start + np.arange(10).astype("timedelta64[D]")).astype("datetime64[ms]").astype(np.int64)
+    slices = insert_ranges(time_ms, batch_size=3, max_partitions=80)
+    assert slices == [(0, 3), (3, 6), (6, 9), (9, 10)]
+
+
 if __name__ == "__main__":
     test_rsi_20_vs_40_same_prefix()
     test_series_to_points_numpy_and_list()
@@ -159,4 +196,6 @@ if __name__ == "__main__":
     test_param_hash_64()
     test_as_metrics_dict()
     test_metrics_arrow_chunk_single_and_multi()
+    test_insert_ranges_daily_history_under_partition_cap()
+    test_insert_ranges_respects_row_batch()
     print("ok")

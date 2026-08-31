@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+import time
 
 import numpy as np
 
@@ -30,6 +31,10 @@ VALUE_COLUMNS = [
 
 # Кэш зарегистрированных параметров в рамках процесса
 _REGISTERED_HASHES: set[int] = set()
+
+# PARTITION BY toYYYYMM(time). CH default max_partitions_per_insert_block = 100.
+MAX_PARTITIONS_PER_INSERT = 80
+INSERT_SETTINGS = {"async_insert": 0}
 
 
 def params_to_json(params: dict[str, float]) -> str:
@@ -73,6 +78,7 @@ def get_max_stored_time(
     param_hash: int,
 ) -> datetime | None:
     """Последняя сохранённая отметка времени серии из TrB.indicator_values_agg."""
+    t0 = time.monotonic()
     result = client.query(
         f"""
         SELECT maxMerge(max_time) AS max_time
@@ -89,6 +95,7 @@ def get_max_stored_time(
             "hash": param_hash,
         },
     )
+    print(f"get_max_stored_time: {time.monotonic() - t0}")
     if not result.result_rows:
         return None
     raw = result.result_rows[0][0]
@@ -102,6 +109,37 @@ def get_max_stored_time(
     if t.year <= 1970:
         return None
     return t
+
+
+def _month_index(time_ms: np.ndarray) -> np.ndarray:
+    """Индекс месяца с 1970-01 — тот же ключ, что PARTITION BY toYYYYMM(time)."""
+    dt = np.asarray(time_ms, dtype=np.int64).astype("datetime64[ms]")
+    return dt.astype("datetime64[M]").astype(np.int64)
+
+
+def insert_ranges(
+    time_ms: np.ndarray,
+    *,
+    batch_size: int,
+    max_partitions: int = MAX_PARTITIONS_PER_INSERT,
+) -> list[tuple[int, int]]:
+    """Нарезать отсортированный ряд так, чтобы один INSERT не задел >max_partitions месяцев."""
+    n = len(time_ms)
+    if n == 0:
+        return []
+    months = _month_index(time_ms)
+    batch = max(int(batch_size), 1)
+    cap = max(int(max_partitions), 1)
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    while start < n:
+        limit = min(start + batch, n)
+        max_month = int(months[start]) + cap - 1
+        rel = int(np.searchsorted(months[start:limit], max_month, side="right"))
+        end = start + max(rel, 1)
+        ranges.append((start, end))
+        start = end
+    return ranges
 
 
 def _times_ms(times: np.ndarray | list[datetime], valid_indices: np.ndarray) -> np.ndarray:
@@ -195,6 +233,7 @@ def save_indicator_values_fast(
     ensure_param_registered(client, param_hash_val, indicator, params_json, keys)
 
     time_ms_all = _times_ms(times, valid_indices)
+    slices = insert_ranges(time_ms_all, batch_size=batch_size)
 
     try:
         import pyarrow as pa
@@ -203,8 +242,7 @@ def save_indicator_values_fast(
         interval_u8 = np.uint8(interval)
         hash_u64 = np.uint64(param_hash_val)
 
-        for offset in range(0, n_valid, batch_size):
-            chunk_end = min(offset + batch_size, n_valid)
+        for offset, chunk_end in slices:
             chunk_len = chunk_end - offset
 
             time_chunk = np.ascontiguousarray(time_ms_all[offset:chunk_end], dtype=np.int64)
@@ -226,7 +264,7 @@ def save_indicator_values_fast(
                 ],
                 names=VALUE_COLUMNS,
             )
-            client.insert_arrow(VALUES_TABLE, table)
+            client.insert_arrow(VALUES_TABLE, table, settings=INSERT_SETTINGS)
             total_saved += chunk_len
             del table
             del time_arr
@@ -238,8 +276,7 @@ def save_indicator_values_fast(
 
         valid_times = _times_naive(times, valid_indices)
         total_saved = 0
-        for offset in range(0, n_valid, batch_size):
-            chunk_end = min(offset + batch_size, n_valid)
+        for offset, chunk_end in slices:
             chunk_len = chunk_end - offset
             chunk_cols = [
                 np.full(chunk_len, interval, dtype=np.uint8),
@@ -249,7 +286,13 @@ def save_indicator_values_fast(
                 valid_times[offset:chunk_end],
                 _metrics_dicts(keys, raw, valid_indices, offset, chunk_end),
             ]
-            client.insert(VALUES_TABLE, chunk_cols, column_names=VALUE_COLUMNS, column_oriented=True)
+            client.insert(
+                VALUES_TABLE,
+                chunk_cols,
+                column_names=VALUE_COLUMNS,
+                column_oriented=True,
+                settings=INSERT_SETTINGS,
+            )
             total_saved += chunk_len
         return total_saved
 

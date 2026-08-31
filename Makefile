@@ -67,7 +67,7 @@ ver:
 
 # Сначала обновляет trb_proto, затем собирает все сервисы
 # historicCandleScheduler — пока не реализован (см. README)
-build: gene ver historicCandle invest postgre postgre-1c-db test clickhouse nats envoy
+build: gene ver historicCandle invest indicators-docker postgre postgre-1c-db test clickhouse nats envoy
 
 make upd: build up
 

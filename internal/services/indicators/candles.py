@@ -67,27 +67,7 @@ ORDER BY time ASC
 """
 
 
-def get_last_complete_candle_time(
-    client: Client,
-    uid: str,
-    interval: int,
-) -> datetime | None:
-    """Возвращает дату последней свечи с is_complete = true для (uid, interval)."""
-    res = client.query(
-        """
-        SELECT time
-        FROM TrB.hct FINAL
-        WHERE uid = {uid:String}
-          AND interval = {interval:Int32}
-          AND is_complete = true
-        ORDER BY time DESC
-        LIMIT 1
-        """,
-        parameters={"uid": uid, "interval": interval},
-    )
-    if not res.result_rows:
-        return None
-    raw = res.result_rows[0][0]
+def _ch_datetime(raw) -> datetime | None:
     if raw is None:
         return None
     t = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
@@ -95,38 +75,33 @@ def get_last_complete_candle_time(
         t = t.replace(tzinfo=timezone.utc)
     else:
         t = t.astimezone(timezone.utc)
+    if t.year <= 1970:
+        return None
     return t
 
 
-def get_first_complete_candle_time(
+def get_complete_candle_time_range(
     client: Client,
     uid: str,
     interval: int,
-) -> datetime | None:
-    """Возвращает дату первой закрытой свечи для (uid, interval)."""
+) -> tuple[datetime | None, datetime | None]:
+    """Первая и последняя закрытые свечи для (uid, interval) из TrB.hct_agg."""
     res = client.query(
         """
-        SELECT time
-        FROM TrB.hct FINAL
-        WHERE uid = {uid:String}
-          AND interval = {interval:Int32}
+        SELECT
+            minMerge(min_time) AS first_time,
+            maxMerge(max_time) AS last_time
+        FROM TrB.hct_agg
+        WHERE interval = {interval:Int32}
+          AND uid = {uid:String}
           AND is_complete = true
-        ORDER BY time ASC
-        LIMIT 1
         """,
         parameters={"uid": uid, "interval": interval},
     )
     if not res.result_rows:
-        return None
-    raw = res.result_rows[0][0]
-    if raw is None:
-        return None
-    t = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
-    if t.tzinfo is None:
-        t = t.replace(tzinfo=timezone.utc)
-    else:
-        t = t.astimezone(timezone.utc)
-    return t
+        return None, None
+    first_raw, last_raw = res.result_rows[0]
+    return _ch_datetime(first_raw), _ch_datetime(last_raw)
 
 
 def load_ohlcv(
