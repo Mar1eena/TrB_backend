@@ -5,10 +5,12 @@ from __future__ import annotations
 import gc
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 import numpy as np
 from clickhouse_connect.driver.client import Client
+from google.protobuf.timestamp_pb2 import Timestamp
 from indicators import indicators_pb2 as pb
 
 from calc import (
@@ -17,7 +19,7 @@ from calc import (
     compute_arrays,
     get_spec,
 )
-from candles import as_utc, get_last_complete_candle_time, load_ohlcv, lookback_delta
+from candles import as_utc, get_first_complete_candle_time, get_last_complete_candle_time, load_ohlcv, lookback_delta
 from registry import resolve_params
 from storage import (
     get_max_stored_time,
@@ -25,7 +27,6 @@ from storage import (
     param_hash_64,
     params_to_json,
     save_indicator_values_fast,
-    upsert_settings,
 )
 
 log = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ def compute_for_instrument(
     warmup = _warmup_bars(spec, params)
     lookback = lookback_delta(req.interval, warmup, warmup_mult=1)
 
-    insert_batch = max(_env_int("INDICATORS_INSERT_BATCH", 50_000), 500)
+    insert_batch = max(_env_int("INDICATORS_INSERT_BATCH", 250_000), 500)
     if req.HasField("max_response_points"):
         max_response = req.max_response_points
     else:
@@ -82,11 +83,11 @@ def compute_for_instrument(
     # 1. Дата последней закрытой свечи в TrB.hct
     last_candle_time = get_last_complete_candle_time(client, uid, req.interval)
     if last_candle_time is None:
-        if req.persist:
-            upsert_settings(client, uid, req.interval, spec.name, params)
         resp = pb.ComputeResponse(type=req.type, total_points=0)
         resp.params.update({k: float(v) for k, v in params.items()})
         return resp
+
+    first_candle_time = get_first_complete_candle_time(client, uid, req.interval)
 
     # 2. Дата последнего сохранённого индикатора в TrB.indicator_values_agg
     last_indicator_time = get_max_stored_time(
@@ -106,8 +107,6 @@ def compute_for_instrument(
             last_indicator_time.isoformat(),
             last_candle_time.isoformat(),
         )
-        if req.persist:
-            upsert_settings(client, uid, req.interval, spec.name, params)
 
         if max_response <= 0:
             resp = pb.ComputeResponse(type=req.type, total_points=0)
@@ -141,6 +140,8 @@ def compute_for_instrument(
     else:
         calc_from = from_dt
         calc_to = min(to_dt, last_candle_time)
+        if first_candle_time is not None and calc_from < first_candle_time:
+            calc_from = first_candle_time
 
     log.info(
         "ComputeForInstrument delta uid=%s interval=%s calc_range=%s — %s (last_ind=%s last_candle=%s)",
@@ -152,9 +153,11 @@ def compute_for_instrument(
         last_candle_time.isoformat(),
     )
 
+    t0 = time.monotonic()
     times, ohlcv = load_ohlcv(
         client, uid, req.interval, calc_from, calc_to, lookback
     )
+    t_load = time.monotonic() - t0
     if len(times) == 0:
         if last_indicator_time is not None:
             resp = pb.ComputeResponse(type=req.type, total_points=0)
@@ -165,7 +168,16 @@ def compute_for_instrument(
             f"в диапазоне {calc_from.isoformat()} — {calc_to.isoformat()}"
         )
 
+    log.info(
+        "ComputeForInstrument loaded uid=%s bars=%s load=%.2fs",
+        uid,
+        len(times),
+        t_load,
+    )
+
+    t0 = time.monotonic()
     raw = compute_arrays(spec, params, times, ohlcv)
+    t_compute = time.monotonic() - t0
     del ohlcv
 
     keys = sorted(raw.keys())
@@ -206,7 +218,7 @@ def compute_for_instrument(
     total = len(valid_indices)
 
     if req.persist and total > 0:
-        upsert_settings(client, uid, req.interval, spec.name, params)
+        t0 = time.monotonic()
         save_indicator_values_fast(
             client,
             uid=uid,
@@ -218,6 +230,14 @@ def compute_for_instrument(
             valid_indices=valid_indices,
             batch_size=insert_batch,
         )
+        t_save = time.monotonic() - t0
+        log.info(
+            "ComputeForInstrument saved uid=%s rows=%s save=%.2fs compute=%.2fs",
+            uid,
+            total,
+            t_save,
+            t_compute,
+        )
 
     tail_indices = valid_indices[-max_response:] if max_response > 0 else np.array([], dtype=np.int64)
     log.info("ComputeForInstrument готово points=%s response=%s persist=%s", total, len(tail_indices), req.persist)
@@ -227,10 +247,10 @@ def compute_for_instrument(
 
     if max_response > 0 and len(tail_indices) > 0:
         if isinstance(times, np.ndarray) and np.issubdtype(times.dtype, np.datetime64):
-            tail_sec = times[tail_indices].astype("datetime64[ms]").astype(np.int64) / 1000.0
-            for s, idx in zip(tail_sec, tail_indices):
-                dt_val = datetime.fromtimestamp(s, tz=timezone.utc)
-                point = pb.IndicatorPoint(time=_datetime_to_ts(dt_val))
+            tail_ms = times[tail_indices].astype("datetime64[ms]").astype(np.int64)
+            for ms_val, idx in zip(tail_ms, tail_indices):
+                ts = Timestamp(seconds=int(ms_val // 1000), nanos=int((ms_val % 1000) * 1_000_000))
+                point = pb.IndicatorPoint(time=ts)
                 for k in keys:
                     point.values[k] = float(raw[k][idx])
                 resp.points.append(point)

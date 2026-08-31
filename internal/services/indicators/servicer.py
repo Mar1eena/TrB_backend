@@ -32,7 +32,7 @@ class IndicatorsServicer(indicators_pb2_grpc.IndicatorsServicer):
     ) -> pb.ComputeResponse:
         if not self._ch_enabled:
             context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
-            context.set_details("ClickHouse не настроен (CLICKHOUSE_URL_DOCKER)")
+            context.set_details("ClickHouse не настроен (CLICKHOUSE_URL)")
             return pb.ComputeResponse()
         try:
             return compute_for_instrument(client_for_thread(), request)
@@ -69,7 +69,7 @@ class IndicatorsServicer(indicators_pb2_grpc.IndicatorsServicer):
     ) -> pb.ListIndicatorValuesResponse:
         if not self._ch_enabled:
             context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
-            context.set_details("ClickHouse не настроен (CLICKHOUSE_URL_DOCKER)")
+            context.set_details("ClickHouse не настроен (CLICKHOUSE_URL)")
             return pb.ListIndicatorValuesResponse()
         try:
             return list_indicator_values(client_for_thread(), request)

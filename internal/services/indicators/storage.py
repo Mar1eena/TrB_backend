@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-SETTINGS_TABLE = "indicator_settings"
 VALUES_TABLE = "indicator_values"
 VALUES_AGG_TABLE = "indicator_values_agg"
 REGISTRY_TABLE = "indicator_param_registry"
@@ -63,20 +62,6 @@ def ensure_param_registered(
         _REGISTERED_HASHES.add(param_hash)
     except Exception as exc:
         log.warning("Не удалось зарегистрировать param_hash %s: %s", param_hash, exc)
-
-
-def upsert_settings(
-    client: Client,
-    uid: str,
-    interval: int,
-    indicator: str,
-    params: dict[str, float],
-) -> None:
-    client.insert(
-        SETTINGS_TABLE,
-        [[uid, interval, indicator, params_to_json(params), 1]],
-        column_names=["uid", "interval", "indicator", "params", "enabled"],
-    )
 
 
 def get_max_stored_time(
@@ -153,12 +138,22 @@ def _metrics_arrow_chunk(
     idx = valid_indices[start:end]
     n_chunk = len(idx)
     n_keys = len(keys)
-    offsets = np.arange(n_chunk + 1, dtype=np.int32) * n_keys
-    key_arr = pa.array(np.tile(keys, n_chunk), type=pa.string())
-    flat = np.empty(n_chunk * n_keys, dtype=np.float64)
-    for i, key in enumerate(keys):
-        flat[i::n_keys] = np.ascontiguousarray(raw[key][idx], dtype=np.float64)
-    return pa.MapArray.from_arrays(offsets, key_arr, pa.array(flat, type=pa.float64()))
+    offsets_buf = pa.py_buffer(np.arange(0, (n_chunk + 1) * n_keys, n_keys, dtype=np.int32))
+    offsets_arr = pa.Array.from_buffers(pa.int32(), n_chunk + 1, [None, offsets_buf])
+
+    if n_keys == 1:
+        key = keys[0]
+        key_arr = pa.repeat(key, n_chunk)
+        flat_buf = pa.py_buffer(np.ascontiguousarray(raw[key][idx], dtype=np.float64))
+        flat_arr = pa.Array.from_buffers(pa.float64(), n_chunk, [None, flat_buf])
+    else:
+        indices = np.tile(np.arange(n_keys, dtype=np.int32), n_chunk)
+        key_arr = pa.DictionaryArray.from_arrays(indices, pa.array(keys, type=pa.string()))
+        stacked = np.column_stack([raw[k][idx] for k in keys]).ravel()
+        flat_buf = pa.py_buffer(np.ascontiguousarray(stacked, dtype=np.float64))
+        flat_arr = pa.Array.from_buffers(pa.float64(), n_chunk * n_keys, [None, flat_buf])
+
+    return pa.MapArray.from_arrays(offsets_arr, key_arr, flat_arr)
 
 
 def _metrics_dicts(
@@ -186,7 +181,7 @@ def save_indicator_values_fast(
     raw: dict[str, np.ndarray],
     valid_indices: np.ndarray,
     *,
-    batch_size: int = 50_000,
+    batch_size: int = 250_000,
 ) -> int:
     """Высокоскоростная пакетная запись значений индикаторов в TrB.indicator_values."""
     n_valid = len(valid_indices)
@@ -205,23 +200,29 @@ def save_indicator_values_fast(
         import pyarrow as pa
 
         total_saved = 0
+        interval_u8 = np.uint8(interval)
+        hash_u64 = np.uint64(param_hash_val)
+
         for offset in range(0, n_valid, batch_size):
             chunk_end = min(offset + batch_size, n_valid)
             chunk_len = chunk_end - offset
 
+            time_chunk = np.ascontiguousarray(time_ms_all[offset:chunk_end], dtype=np.int64)
             time_arr = pa.Array.from_buffers(
                 pa.timestamp("ms"),
                 chunk_len,
-                [None, pa.py_buffer(time_ms_all[offset:chunk_end])],
+                [None, pa.py_buffer(time_chunk)],
             )
+            map_arr = _metrics_arrow_chunk(keys, raw, valid_indices, offset, chunk_end)
+
             table = pa.Table.from_arrays(
                 [
-                    pa.array(np.full(chunk_len, interval, dtype=np.uint8)),
+                    pa.repeat(interval_u8, chunk_len),
                     pa.repeat(indicator, chunk_len),
                     pa.repeat(uid, chunk_len),
-                    pa.array(np.full(chunk_len, param_hash_val, dtype=np.uint64)),
+                    pa.repeat(hash_u64, chunk_len),
                     time_arr,
-                    _metrics_arrow_chunk(keys, raw, valid_indices, offset, chunk_end),
+                    map_arr,
                 ],
                 names=VALUE_COLUMNS,
             )
@@ -229,10 +230,11 @@ def save_indicator_values_fast(
             total_saved += chunk_len
             del table
             del time_arr
+            del map_arr
 
         return total_saved
     except Exception as exc:
-        log.debug("PyArrow insert fallback to columnar insert: %s", exc)
+        log.warning("PyArrow insert fallback to columnar insert: %s", exc)
 
         valid_times = _times_naive(times, valid_indices)
         total_saved = 0

@@ -1,19 +1,7 @@
--- Индикаторы: настройки (JSON) + реестр параметров + значения (indicator_values).
+-- Индикаторы: реестр параметров + значения (indicator_values) + агрегаты.
 --   clickhouse-client --multiquery < configs/clickhouse/init.d/indicators.sql
 
 CREATE DATABASE IF NOT EXISTS TrB;
-
-CREATE TABLE IF NOT EXISTS TrB.indicator_settings
-(
-    uid String CODEC(ZSTD(1)),
-    interval Int32 CODEC(Delta, ZSTD(1)),
-    indicator LowCardinality(String),
-    params String COMMENT 'JSON params, e.g. {"period":14.0}' CODEC(ZSTD(1)),
-    enabled UInt8,
-    updated_at DateTime64(3) DEFAULT now64(3) CODEC(Delta, ZSTD(1))
-)
-ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY (uid, interval, indicator, params);
 
 CREATE TABLE IF NOT EXISTS TrB.indicator_param_registry
 (

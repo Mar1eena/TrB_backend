@@ -10,6 +10,7 @@ from concurrent import futures
 import grpc
 from indicators import indicators_pb2_grpc
 
+import envutil
 from clickhouse_client import check_connection
 from servicer import IndicatorsServicer
 
@@ -37,8 +38,10 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    envutil.load()
     _warmup_libs()
-    port = os.environ.get("PORT", "9093")
+    # Не брать общий PORT из .env (там 9091 для Go API). Envoy ждёт 9093.
+    port = (os.environ.get("INDICATORS_PORT") or "9093").strip()
     ch_enabled = False
     try:
         check_connection()
@@ -55,7 +58,8 @@ def main() -> None:
         ],
     )
     indicators_pb2_grpc.add_IndicatorsServicer_to_server(IndicatorsServicer(ch_enabled), server)
-    listen = f"[::]:{port}"
+    # 0.0.0.0: Envoy ходит сюда через host.docker.internal (IPv4). [::] на Windows не dual-stack.
+    listen = f"0.0.0.0:{port}"
     server.add_insecure_port(listen)
     server.start()
     logging.info("indicators слушает gRPC на %s", listen)

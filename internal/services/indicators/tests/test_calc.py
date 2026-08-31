@@ -15,7 +15,7 @@ from indicators import indicators_pb2 as pb
 
 from calc import candles_to_ohlcv, compute, series_to_points
 from registry import REGISTRY, resolve_params
-from storage import _as_metrics_dict, param_hash_64, params_to_json
+from storage import _as_metrics_dict, _metrics_arrow_chunk, param_hash_64, params_to_json
 
 
 def _ts(dt: datetime) -> Timestamp:
@@ -128,6 +128,29 @@ def test_as_metrics_dict() -> None:
     assert _as_metrics_dict(None) == {}
 
 
+def test_metrics_arrow_chunk_single_and_multi() -> None:
+    n = 10
+    valid_indices = np.arange(n)
+    
+    # Single key (e.g. RSI)
+    raw_single = {"value": np.array([float(i) for i in range(n)], dtype=np.float64)}
+    chunk_single = _metrics_arrow_chunk(["value"], raw_single, valid_indices, 0, n)
+    assert len(chunk_single) == n
+    assert chunk_single.to_pylist()[0] == [("value", 0.0)]
+    assert chunk_single.to_pylist()[-1] == [("value", 9.0)]
+
+    # Multi key (e.g. BB)
+    raw_multi = {
+        "lower": np.array([float(i) for i in range(n)], dtype=np.float64),
+        "middle": np.array([float(i + 1) for i in range(n)], dtype=np.float64),
+        "upper": np.array([float(i + 2) for i in range(n)], dtype=np.float64),
+    }
+    chunk_multi = _metrics_arrow_chunk(["lower", "middle", "upper"], raw_multi, valid_indices, 0, n)
+    assert len(chunk_multi) == n
+    assert chunk_multi.to_pylist()[0] == [("lower", 0.0), ("middle", 1.0), ("upper", 2.0)]
+    assert chunk_multi.to_pylist()[-1] == [("lower", 9.0), ("middle", 10.0), ("upper", 11.0)]
+
+
 if __name__ == "__main__":
     test_rsi_20_vs_40_same_prefix()
     test_series_to_points_numpy_and_list()
@@ -135,4 +158,5 @@ if __name__ == "__main__":
     test_all_registry_indicators()
     test_param_hash_64()
     test_as_metrics_dict()
+    test_metrics_arrow_chunk_single_and_multi()
     print("ok")

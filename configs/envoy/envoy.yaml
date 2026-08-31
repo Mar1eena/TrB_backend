@@ -336,7 +336,7 @@ static_resources:
                       address: clickhouse
                       port_value: 9091
     - name: indicators
-      connect_timeout: 0.25s
+      connect_timeout: 2s
       lb_policy: ROUND_ROBIN
       dns_lookup_family: V4_ONLY
       type: STRICT_DNS
@@ -352,7 +352,8 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      address: indicators
+                      # хост (VS Code / make indicators) или опубликованный 9093 контейнера
+                      address: host.docker.internal
                       port_value: 9093
     - name: clickhouse_grpc
       connect_timeout: 0.25s

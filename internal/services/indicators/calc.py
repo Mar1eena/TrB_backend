@@ -86,11 +86,11 @@ def series_to_points(
             valid &= (times <= to_np)
 
         indices = np.flatnonzero(valid)
-        epoch_sec = times[indices].astype("datetime64[ms]").astype(np.int64) / 1000.0
+        epoch_ms = times[indices].astype("datetime64[ms]").astype(np.int64)
         points: list[pb.IndicatorPoint] = []
-        for idx, s in zip(indices, epoch_sec):
-            dt_val = datetime.fromtimestamp(s, tz=timezone.utc)
-            point = pb.IndicatorPoint(time=_datetime_to_ts(dt_val))
+        for idx, ms_val in zip(indices, epoch_ms):
+            ts = Timestamp(seconds=int(ms_val // 1000), nanos=int((ms_val % 1000) * 1_000_000))
+            point = pb.IndicatorPoint(time=ts)
             point.values.update({k: float(arr[idx]) for k, arr in zip(keys, arrays)})
             points.append(point)
         return points

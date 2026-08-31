@@ -124,8 +124,8 @@ services:
         condition: service_healthy
       postgre-db:
         condition: service_healthy
-      postgre-1c-db:
-        condition: service_healthy
+      # postgre-1c-db:
+      #   condition: service_healthy
 
   test:
     <<: [*services-config]
@@ -158,10 +158,12 @@ services:
       clickhouse-db:
         condition: service_healthy
     environment:
+      - APP_RUNTIME=docker
       - PORT=9093
+      - INDICATORS_PORT=9093
       - GRPC_WORKERS=4
       - CLICKHOUSE_URL_DOCKER=clickhouse-db:8123
-      - INDICATORS_INSERT_BATCH=8000
+      - INDICATORS_INSERT_BATCH=250000
       - INDICATORS_MAX_RESPONSE_POINTS=500
       - INDICATORS_WARMUP_MULT=8
       - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-TrB}
@@ -172,7 +174,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          cpus: '2'
           memory: 2048M
         reservations:
           memory: 128M
@@ -219,6 +221,8 @@ services:
     ports:
       - '8081:8081'
       - '9901:9901'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./configs/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ../TrB_proto/gen/desc/trb_protos.pb:/etc/envoy/protos/trb_protos.pb:ro
@@ -227,7 +231,6 @@ services:
       - postgre
       - clickhouse
       - invest
-      - indicators
     deploy:
       resources:
         limits:
@@ -536,8 +539,8 @@ services:
     depends_on:
       clickhouse-db:
         condition: service_healthy
-      postgre-1c-db:
-        condition: service_started
+      # postgre-1c-db:
+      #   condition: service_started
       postgre-db:
         condition: service_started
     networks:

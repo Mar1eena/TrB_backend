@@ -9,7 +9,7 @@
             "type": "python",
             "request": "launch",
             "program": "${file}",
-            "console": "integratedTerminal",
+            // "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         },
         {
@@ -37,6 +37,23 @@
             "program": "${workspaceFolder}/internal/services/indicators/talib_sandbox/compare_all.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/internal/services/indicators/talib_sandbox",
+            "justMyCode": false
+        },
+        {
+            "name": "Indicators",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/internal/services/indicators/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "INDICATORS_PORT": "9093",
+                "GRPC_WORKERS": "4",
+                "INDICATORS_INSERT_BATCH": "250000",
+                "INDICATORS_MAX_RESPONSE_POINTS": "500",
+                "INDICATORS_WARMUP_MULT": "8"
+            },
             "justMyCode": false
         },
         {

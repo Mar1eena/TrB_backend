@@ -98,6 +98,37 @@ def get_last_complete_candle_time(
     return t
 
 
+def get_first_complete_candle_time(
+    client: Client,
+    uid: str,
+    interval: int,
+) -> datetime | None:
+    """Возвращает дату первой закрытой свечи для (uid, interval)."""
+    res = client.query(
+        """
+        SELECT time
+        FROM TrB.hct FINAL
+        WHERE uid = {uid:String}
+          AND interval = {interval:Int32}
+          AND is_complete = true
+        ORDER BY time ASC
+        LIMIT 1
+        """,
+        parameters={"uid": uid, "interval": interval},
+    )
+    if not res.result_rows:
+        return None
+    raw = res.result_rows[0][0]
+    if raw is None:
+        return None
+    t = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    else:
+        t = t.astimezone(timezone.utc)
+    return t
+
+
 def load_ohlcv(
     client: Client,
     uid: str,
@@ -116,45 +147,60 @@ def load_ohlcv(
     }
 
     try:
-        np_res = client.query_np(HCT_OHLCV_QUERY, parameters=parameters)
-        if len(np_res) == 0:
-            return [], {}
+        table = client.query_arrow(HCT_OHLCV_QUERY, parameters=parameters)
+        if len(table) == 0:
+            return np.array([], dtype="datetime64[us]"), {}
 
-        times = np_res["time"]
+        times = table["time"].to_numpy(zero_copy_only=False)
         ohlcv = {
-            "open": np.ascontiguousarray(np_res["open"], dtype=np.float64),
-            "high": np.ascontiguousarray(np_res["high"], dtype=np.float64),
-            "low": np.ascontiguousarray(np_res["low"], dtype=np.float64),
-            "close": np.ascontiguousarray(np_res["close"], dtype=np.float64),
-            "volume": np.ascontiguousarray(np_res["volume"], dtype=np.float64),
+            "open": table["open"].to_numpy(zero_copy_only=False),
+            "high": table["high"].to_numpy(zero_copy_only=False),
+            "low": table["low"].to_numpy(zero_copy_only=False),
+            "close": table["close"].to_numpy(zero_copy_only=False),
+            "volume": table["volume"].to_numpy(zero_copy_only=False).astype(np.float64, copy=False),
         }
         return times, ohlcv
     except Exception as exc:
-        log.debug("load_ohlcv query_np fallback to client.query: %s", exc)
-        result = client.query(HCT_OHLCV_QUERY, parameters=parameters)
-        rows = result.result_rows
-        if not rows:
-            return [], {}
+        log.debug("load_ohlcv query_arrow fallback to query_np / query: %s", exc)
+        try:
+            np_res = client.query_np(HCT_OHLCV_QUERY, parameters=parameters)
+            if len(np_res) == 0:
+                return [], {}
 
-        n = len(rows)
-        times_list: list[datetime] = [datetime.min.replace(tzinfo=timezone.utc)] * n
-        opens = np.empty(n, dtype=np.float64)
-        highs = np.empty(n, dtype=np.float64)
-        lows = np.empty(n, dtype=np.float64)
-        closes = np.empty(n, dtype=np.float64)
-        volumes = np.empty(n, dtype=np.float64)
-        for i, row in enumerate(rows):
-            t, o, h, l, c, v = row
-            times_list[i] = as_utc(t) if isinstance(t, datetime) else as_utc(datetime.fromisoformat(str(t)))
-            opens[i] = float(o)
-            highs[i] = float(h)
-            lows[i] = float(l)
-            closes[i] = float(c)
-            volumes[i] = float(v)
-        return times_list, {
-            "open": opens,
-            "high": highs,
-            "low": lows,
-            "close": closes,
-            "volume": volumes,
-        }
+            times = np_res["time"]
+            ohlcv = {
+                "open": np.ascontiguousarray(np_res["open"], dtype=np.float64),
+                "high": np.ascontiguousarray(np_res["high"], dtype=np.float64),
+                "low": np.ascontiguousarray(np_res["low"], dtype=np.float64),
+                "close": np.ascontiguousarray(np_res["close"], dtype=np.float64),
+                "volume": np.ascontiguousarray(np_res["volume"], dtype=np.float64),
+            }
+            return times, ohlcv
+        except Exception:
+            result = client.query(HCT_OHLCV_QUERY, parameters=parameters)
+            rows = result.result_rows
+            if not rows:
+                return [], {}
+
+            n = len(rows)
+            times_list: list[datetime] = [datetime.min.replace(tzinfo=timezone.utc)] * n
+            opens = np.empty(n, dtype=np.float64)
+            highs = np.empty(n, dtype=np.float64)
+            lows = np.empty(n, dtype=np.float64)
+            closes = np.empty(n, dtype=np.float64)
+            volumes = np.empty(n, dtype=np.float64)
+            for i, row in enumerate(rows):
+                t, o, h, l, c, v = row
+                times_list[i] = as_utc(t) if isinstance(t, datetime) else as_utc(datetime.fromisoformat(str(t)))
+                opens[i] = float(o)
+                highs[i] = float(h)
+                lows[i] = float(l)
+                closes[i] = float(c)
+                volumes[i] = float(v)
+            return times_list, {
+                "open": opens,
+                "high": highs,
+                "low": lows,
+                "close": closes,
+                "volume": volumes,
+            }
