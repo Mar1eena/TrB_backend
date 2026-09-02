@@ -1,4 +1,4 @@
-"""Тест расчёта RSI без gRPC."""
+"""Тест расчёта индикаторов (чистые вычисления)."""
 
 from __future__ import annotations
 
@@ -15,13 +15,6 @@ from indicators import indicators_pb2 as pb
 
 from calc import candles_to_ohlcv, compute, series_to_points
 from registry import REGISTRY, resolve_params
-from storage import (
-    _as_metrics_dict,
-    _metrics_arrow_chunk,
-    insert_ranges,
-    param_hash_64,
-    params_to_json,
-)
 
 
 def _ts(dt: datetime) -> Timestamp:
@@ -116,86 +109,9 @@ def test_all_registry_indicators() -> None:
             assert len(arr) == n
 
 
-def test_param_hash_64() -> None:
-    h1 = param_hash_64("RSI", params_to_json({"period": 14}))
-    h2 = param_hash_64("RSI", params_to_json({"period": 21}))
-    h3 = param_hash_64("MACD", params_to_json({"fastperiod": 12, "slowperiod": 26, "signalperiod": 9}))
-    assert isinstance(h1, int)
-    assert h1 > 0
-    assert h1 != h2
-    assert h1 != h3
-    assert h1 == param_hash_64("RSI", '{"period":14.0}')
-
-
-def test_as_metrics_dict() -> None:
-    assert _as_metrics_dict({"value": 54.3, "signal": 1.2}) == {"value": 54.3, "signal": 1.2}
-    assert _as_metrics_dict([("hist", 0.5), ("value", 1.0)]) == {"hist": 0.5, "value": 1.0}
-    assert _as_metrics_dict({}) == {}
-    assert _as_metrics_dict(None) == {}
-
-
-def test_metrics_arrow_chunk_single_and_multi() -> None:
-    n = 10
-    valid_indices = np.arange(n)
-    
-    # Single key (e.g. RSI)
-    raw_single = {"value": np.array([float(i) for i in range(n)], dtype=np.float64)}
-    chunk_single = _metrics_arrow_chunk(["value"], raw_single, valid_indices, 0, n)
-    assert len(chunk_single) == n
-    assert chunk_single.to_pylist()[0] == [("value", 0.0)]
-    assert chunk_single.to_pylist()[-1] == [("value", 9.0)]
-
-    # Multi key (e.g. BB)
-    raw_multi = {
-        "lower": np.array([float(i) for i in range(n)], dtype=np.float64),
-        "middle": np.array([float(i + 1) for i in range(n)], dtype=np.float64),
-        "upper": np.array([float(i + 2) for i in range(n)], dtype=np.float64),
-    }
-    chunk_multi = _metrics_arrow_chunk(["lower", "middle", "upper"], raw_multi, valid_indices, 0, n)
-    assert len(chunk_multi) == n
-    assert chunk_multi.to_pylist()[0] == [("lower", 0.0), ("middle", 1.0), ("upper", 2.0)]
-    assert chunk_multi.to_pylist()[-1] == [("lower", 9.0), ("middle", 10.0), ("upper", 11.0)]
-
-
-def test_insert_ranges_daily_history_under_partition_cap() -> None:
-    # ~30 лет дневных свечей — больше 100 месячных партиций, один batch_size их все вмещает.
-    start = np.datetime64("1996-01-01", "ms")
-    days = 365 * 30 + 8
-    time_ms = (start + np.arange(days).astype("timedelta64[D]")).astype("datetime64[ms]").astype(np.int64)
-
-    slices = insert_ranges(time_ms, batch_size=250_000, max_partitions=80)
-    assert slices[0][0] == 0
-    assert slices[-1][1] == days
-    covered = 0
-    for start_i, end_i in slices:
-        assert end_i > start_i
-        covered += end_i - start_i
-        months = (
-            time_ms[start_i:end_i]
-            .astype("datetime64[ms]")
-            .astype("datetime64[M]")
-            .astype(np.int64)
-        )
-        assert int(months[-1] - months[0] + 1) <= 80
-    assert covered == days
-    assert len(slices) >= 4
-
-
-def test_insert_ranges_respects_row_batch() -> None:
-    start = np.datetime64("2024-01-01", "ms")
-    time_ms = (start + np.arange(10).astype("timedelta64[D]")).astype("datetime64[ms]").astype(np.int64)
-    slices = insert_ranges(time_ms, batch_size=3, max_partitions=80)
-    assert slices == [(0, 3), (3, 6), (6, 9), (9, 10)]
-
-
 if __name__ == "__main__":
     test_rsi_20_vs_40_same_prefix()
     test_series_to_points_numpy_and_list()
     test_candles_to_ohlcv()
     test_all_registry_indicators()
-    test_param_hash_64()
-    test_as_metrics_dict()
-    test_metrics_arrow_chunk_single_and_multi()
-    test_insert_ranges_daily_history_under_partition_cap()
-    test_insert_ranges_respects_row_batch()
     print("ok")

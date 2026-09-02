@@ -12,6 +12,9 @@ import (
 // MaxMsgSize — лимит unary-сообщений (справочник акций ~тысячи инструментов).
 const MaxMsgSize = 64 << 20
 
+// IndicatorsMaxMsgSize — лимит для Compute(candles) между clickhouse и indicators.
+const IndicatorsMaxMsgSize = 128 << 20
+
 // DialInsecure открывает соединение к gRPC-сервису без TLS,
 // автоматически подключая интерцепторы логирования и передачи контекста трассировки.
 func DialInsecure(addr string, extraOpts ...grpc.DialOption) (*grpc.ClientConn, error) {

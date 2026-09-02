@@ -8,6 +8,7 @@ import (
 	"github.com/Mar1eena/TrB_V3/internal/pkg/dbconn"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
+	indpb "github.com/Mar1eena/trb_proto/gen/go/indicators"
 	"google.golang.org/grpc"
 )
 
@@ -22,17 +23,20 @@ type ConnInfo struct {
 type Server struct {
 	chmgr.UnimplementedClickHouse_AdminServer
 	chmgr.UnimplementedClickHouseServer
-	ch          driver.Conn
-	extras      map[string]driver.Conn
-	infos       []ConnInfo
-	defaultName string
-	log         zlog.Logger
-	mu          sync.Mutex
+	indpb.UnimplementedIndicatorsServer
+	ch               driver.Conn
+	indicatorsClient indpb.IndicatorsClient
+	extras           map[string]driver.Conn
+	infos            []ConnInfo
+	defaultName      string
+	log              zlog.Logger
+	mu               sync.Mutex
 }
 
 var (
 	_ chmgr.ClickHouse_AdminServer = (*Server)(nil)
 	_ chmgr.ClickHouseServer       = (*Server)(nil)
+	_ indpb.IndicatorsServer       = (*Server)(nil)
 )
 
 func New(ch driver.Conn, log zlog.Logger) *Server {
@@ -40,6 +44,17 @@ func New(ch driver.Conn, log zlog.Logger) *Server {
 }
 
 func NewWithExtras(ch driver.Conn, log zlog.Logger, extras map[string]driver.Conn, defaultName string, infos ...ConnInfo) *Server {
+	return NewWithExtrasAndIndicators(ch, log, nil, extras, defaultName, infos...)
+}
+
+func NewWithExtrasAndIndicators(
+	ch driver.Conn,
+	log zlog.Logger,
+	indicators indpb.IndicatorsClient,
+	extras map[string]driver.Conn,
+	defaultName string,
+	infos ...ConnInfo,
+) *Server {
 	if extras == nil {
 		extras = map[string]driver.Conn{}
 	}
@@ -50,12 +65,19 @@ func NewWithExtras(ch driver.Conn, log zlog.Logger, extras map[string]driver.Con
 		infos = []ConnInfo{{Name: defaultName, Default: true}}
 	}
 	return &Server{
-		ch:          ch,
-		extras:      extras,
-		infos:       infos,
-		defaultName: defaultName,
-		log:         log,
+		ch:               ch,
+		indicatorsClient: indicators,
+		extras:           extras,
+		infos:            infos,
+		defaultName:      defaultName,
+		log:              log,
 	}
+}
+
+func (s *Server) SetIndicatorsClient(client indpb.IndicatorsClient) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.indicatorsClient = client
 }
 
 func (s *Server) db(ctx context.Context) driver.Conn {
@@ -115,4 +137,5 @@ func (s *Server) CloseExtras() {
 func Register(srv *grpc.Server, service *Server) {
 	chmgr.RegisterClickHouse_AdminServer(srv, service)
 	chmgr.RegisterClickHouseServer(srv, service)
+	indpb.RegisterIndicatorsServer(srv, service)
 }

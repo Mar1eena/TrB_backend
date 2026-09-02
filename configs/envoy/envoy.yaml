@@ -173,14 +173,14 @@ static_resources:
                         - match:
                             prefix: /trb.indicators.v1.Indicators
                           route:
-                            cluster: indicators
+                            cluster: clickhouse
                             timeout: 300s
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
                             prefix: /v1/indicators
                           route:
-                            cluster: indicators
+                            cluster: clickhouse
                             timeout: 300s
                             request_mirror_policies:
                               cluster: debuger_grpc

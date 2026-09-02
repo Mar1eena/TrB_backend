@@ -154,21 +154,11 @@ services:
       context: .
       dockerfile: ./build/docker/services/indicators/Dockerfile
     command: ["python", "/app/main.py"]
-    depends_on:
-      clickhouse-db:
-        condition: service_healthy
     environment:
       - APP_RUNTIME=docker
       - PORT=9093
       - INDICATORS_PORT=9093
       - GRPC_WORKERS=4
-      - CLICKHOUSE_URL_DOCKER=clickhouse-db:8123
-      - INDICATORS_INSERT_BATCH=250000
-      - INDICATORS_MAX_RESPONSE_POINTS=500
-      - INDICATORS_WARMUP_MULT=8
-      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-TrB}
-      - CLICKHOUSE_USERNAME=${CLICKHOUSE_USERNAME:-default}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-default}
     ports:
       - "9093:9093"
     deploy:
