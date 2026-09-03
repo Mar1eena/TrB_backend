@@ -15,7 +15,6 @@ import (
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
 	"github.com/Mar1eena/TrB_V3/internal/services/clickhouse/server"
-	indpb "github.com/Mar1eena/trb_proto/gen/go/indicators"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 )
@@ -82,34 +81,6 @@ func App() {
 		}
 	}()
 
-	indAddr := env.Addr("INDICATORS_API_URL", "INDICATORS_API_URL_DOCKER")
-	if indAddr == "" {
-		if env.IsContainer() {
-			indAddr = "indicators:9093"
-		} else {
-			indAddr = "localhost:9093"
-		}
-	}
-	var indConn *grpc.ClientConn
-	var indClient indpb.IndicatorsClient
-	if conn, err := grpcx.DialInsecureWithLogger(indAddr, l,
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(grpcx.IndicatorsMaxMsgSize),
-			grpc.MaxCallSendMsgSize(grpcx.IndicatorsMaxMsgSize),
-		),
-	); err != nil {
-		l.Warn().Err(err).Str("addr", indAddr).Msg("не удалось подключить gRPC клиент indicators")
-	} else {
-		indConn = conn
-		indClient = indpb.NewIndicatorsClient(conn)
-		l.Info().Str("addr", indAddr).Msg("gRPC клиент indicators подключен")
-	}
-	defer func() {
-		if indConn != nil {
-			_ = indConn.Close()
-		}
-	}()
-
 	port := env.Get("PORT")
 	if !env.IsContainer() {
 		// Envoy зеркалирует gRPC на host.docker.internal:50051.
@@ -133,7 +104,7 @@ func App() {
 	l.Info().Str("addr", addr).Msg("clickhouse слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
-	service := server.NewWithExtrasAndIndicators(ch, l, indClient, extras, defaultName, infos...)
+	service := server.NewWithExtras(ch, l, extras, defaultName, infos...)
 	server.Register(gs, service)
 
 	eg, egCtx := errgroup.WithContext(ctx)
