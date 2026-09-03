@@ -40,19 +40,28 @@
             "justMyCode": false
         },
         {
-            "name": "Indicators",
+            "name": "Indicators manage",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/internal/services/indicators/manage/cmd/main.go",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PORT": "9093",
+                "INDICATORS_PORT": "9093"
+            }
+        },
+        {
+            "name": "Indicators calculation",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/internal/services/indicators/main.py",
+            "program": "${workspaceFolder}/internal/services/indicators/calculation/main.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "envFile": "${workspaceFolder}/.env",
             "env": {
-                "INDICATORS_PORT": "9093",
-                "GRPC_WORKERS": "4",
-                "INDICATORS_INSERT_BATCH": "250000",
-                "INDICATORS_MAX_RESPONSE_POINTS": "500",
-                "INDICATORS_WARMUP_MULT": "8"
+                "PYTHONPATH": "${workspaceFolder}/internal/services/indicators/calculation",
+                "INDICATORS_NATS_SUBJECT": "TrB.indicators.tasks"
             },
             "justMyCode": false
         },

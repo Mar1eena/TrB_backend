@@ -171,17 +171,17 @@ static_resources:
                             cluster: clickhouse
                             timeout: 60s
                         - match:
-                            prefix: /trb.indicators.v1.Indicators
+                            prefix: /trb.indicators.v1.Indicator_Settings
                           route:
-                            cluster: clickhouse
-                            timeout: 300s
+                            cluster: indicators
+                            timeout: 60s
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
                             prefix: /v1/indicators
                           route:
-                            cluster: clickhouse
-                            timeout: 300s
+                            cluster: indicators
+                            timeout: 60s
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
@@ -214,7 +214,7 @@ static_resources:
                         - trb.test.v1.Test
                         - trb.clickhouse.v1.ClickHouse_Admin
                         - trb.clickhouse.v1.ClickHouse
-                        - trb.indicators.v1.Indicators
+                        - trb.indicators.v1.Indicator_Settings
                       print_options:
                         add_whitespace: true
                         always_print_primitive_fields: true

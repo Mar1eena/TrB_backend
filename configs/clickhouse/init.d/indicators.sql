@@ -58,3 +58,15 @@ SELECT
     countState() AS count_indicators
 FROM TrB.indicator_values
 GROUP BY interval, indicator, uid, param_hash, log_date;
+
+CREATE DATABASE IF NOT EXISTS TrB_indicators;
+
+CREATE TABLE IF NOT EXISTS TrB_indicators.indicator_assignments
+(
+    param_hash UInt64,
+    request String CODEC(ZSTD(3)),
+    updated_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (param_hash)
+SETTINGS index_granularity = 8192;

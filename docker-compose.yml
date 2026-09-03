@@ -146,21 +146,60 @@ services:
         reservations:
           memory: 64M
 
-  indicators:
+  indicators-manage:
     <<: [*services-config]
-    container_name: trb-indicators
-    image: indicators:latest
+    container_name: trb-indicators-manage
+    image: indicators-manage:latest
+    build:
+      <<: *go-build
+      args:
+        CMD_PATH: ./internal/services/indicators/manage/cmd/main.go
+    environment:
+      - APP_RUNTIME=docker
+      - PORT=9093
+      - INDICATORS_PORT=9093
+      - NATS_URL
+      - NATS_URL_DOCKER
+      - CLICKHOUSE_URL
+      - CLICKHOUSE_URL_DOCKER
+      - CLICKHOUSE_DATABASE
+      - CLICKHOUSE_USER
+      - CLICKHOUSE_USERNAME
+      - CLICKHOUSE_PASSWORD
+    ports:
+      - "9093:9093"
+    depends_on:
+      - clickhouse-db
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+        reservations:
+          memory: 64M
+
+  indicators-calculation:
+    <<: [*services-config]
+    container_name: trb-indicators-calculation
+    image: indicators-calculation:latest
     build:
       context: .
       dockerfile: ./build/docker/services/indicators/Dockerfile
     command: ["python", "/app/main.py"]
     environment:
       - APP_RUNTIME=docker
-      - PORT=9093
-      - INDICATORS_PORT=9093
-      - GRPC_WORKERS=4
-    ports:
-      - "9093:9093"
+      - INDICATORS_NATS_SUBJECT=TrB.indicators.tasks
+      - NATS_URL
+      - NATS_URL_DOCKER
+      - CLICKHOUSE_URL
+      - CLICKHOUSE_URL_DOCKER
+      - CLICKHOUSE_DATABASE
+      - CLICKHOUSE_USER
+      - CLICKHOUSE_USERNAME
+      - CLICKHOUSE_PASSWORD
+    depends_on:
+      - clickhouse-db
+      - nats-server
     deploy:
       resources:
         limits:
@@ -168,18 +207,6 @@ services:
           memory: 2048M
         reservations:
           memory: 128M
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import grpc; ch=grpc.insecure_channel('127.0.0.1:9093'); grpc.channel_ready_future(ch).result(timeout=5)",
-        ]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
 
   clickhouse:
     <<: [*services-config]

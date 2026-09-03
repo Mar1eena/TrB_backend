@@ -9,11 +9,12 @@ cmd_historiccandle_scheduler = ./internal/services/historicCandle_scheduler/cmd/
 cmd_invest = ./internal/services/invest/cmd/main.go
 cmd_postgre = ./internal/services/postgre/cmd/main.go
 cmd_test = ./internal/services/test/cmd/main.go
-cmd_indicators = ./internal/services/indicators/main.py
+cmd_indicators_manage = ./internal/services/indicators/manage/cmd/main.go
+cmd_indicators_calculation = ./internal/services/indicators/calculation/main.py
 indicators_dockerfile = ./build/docker/services/indicators/Dockerfile
 TRB_PROTO_REF ?= main
 
-.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db test services gene invest ver indicators
+.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db test services gene invest ver indicators indicators-manage indicators-calculation indicators-docker indicators-manage-docker indicators-calculation-docker
 
 up:
 	docker-compose --project-name=${name} up -d
@@ -55,11 +56,21 @@ postgre-1c-db:
 test:
 	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_test} -t test:latest
 
-indicators:
-	python ${cmd_indicators}
+indicators: indicators-manage
 
-indicators-docker:
-	docker build -f ${indicators_dockerfile} . -t indicators:latest
+indicators-manage:
+	go run ${cmd_indicators_manage}
+
+indicators-calculation:
+	python ${cmd_indicators_calculation}
+
+indicators-docker: indicators-manage-docker indicators-calculation-docker
+
+indicators-manage-docker:
+	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_indicators_manage} -t indicators-manage:latest
+
+indicators-calculation-docker:
+	docker build -f ${indicators_dockerfile} . -t indicators-calculation:latest
 
 ver:
 	go get github.com/Mar1eena/trb_proto@latest
