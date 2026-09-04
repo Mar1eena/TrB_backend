@@ -35,14 +35,11 @@ LIMIT 1
 }
 
 func UpsertRequest(ctx context.Context, conn driver.Conn, paramHash uint64, request []byte) error {
-	batch, err := conn.PrepareBatch(ctx, `INSERT INTO `+AssignmentsTable+` (param_hash, request)`)
-	if err != nil {
-		return err
+	query := `INSERT INTO ` + AssignmentsTable + ` (param_hash, request) VALUES (?, ?)`
+	if err := conn.Exec(ctx, query, paramHash, string(request)); err != nil {
+		return fmt.Errorf("failed to upsert request via exec: %w", err)
 	}
-	if err := batch.Append(paramHash, request); err != nil {
-		return err
-	}
-	return batch.Send()
+	return nil
 }
 
 func DeleteByHash(ctx context.Context, conn driver.Conn, paramHash uint64) error {
