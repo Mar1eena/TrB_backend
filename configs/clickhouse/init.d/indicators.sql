@@ -70,3 +70,14 @@ CREATE TABLE IF NOT EXISTS TrB_indicators.indicator_assignments
 ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (param_hash)
 SETTINGS index_granularity = 8192;
+
+-- metrics — выходы индикатора в порядке полей values.proto (без time).
+CREATE TABLE IF NOT EXISTS TrB_indicators.indicator_values
+(
+    param_hash UInt64 CODEC(ZSTD(1)),
+    time DateTime64(3) CODEC(Delta(8), ZSTD(1)),
+    metrics Array(Float64) CODEC(ZSTD(1))
+)
+ENGINE = MergeTree
+ORDER BY (param_hash, time)
+SETTINGS index_granularity = 8192;

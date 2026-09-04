@@ -75,15 +75,14 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
         indicator,
     )
 
-    max_time = ''
-    # max_time = values.fetch_max_time(client, param_hash)
-    # if not end_after_max_time(settings, max_time):
-    #     log.info(
-    #         "param_hash=%s: пропуск расчёта, end не больше max_time=%s",
-    #         param_hash,
-    #         max_time,
-    #     )
-    #     return None
+    max_time = values.fetch_max_time(client, param_hash)
+    if not end_after_max_time(settings, max_time):
+        log.info(
+            "param_hash=%s: пропуск расчёта, end не больше max_time=%s",
+            param_hash,
+            max_time,
+        )
+        return None
 
     try:
         candles = hct.fetch_candles(client, settings)
@@ -102,7 +101,12 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
         return None
 
     written = values.insert_values(
-        client, param_hash, candles.times, series, after=max_time
+        client,
+        param_hash,
+        candles.times,
+        series,
+        after=max_time,
+        ordered_keys=spec.output_keys,
     )
     log.info(
         "param_hash=%s indicator=%s candles=%s written=%s params=%s",
