@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from indicators import indicators_pb2 as pb
@@ -74,6 +75,15 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
         indicator,
     )
 
+    max_time = values.fetch_max_time(client, param_hash)
+    if not end_after_max_time(settings, max_time):
+        log.info(
+            "param_hash=%s: пропуск расчёта, end не больше max_time=%s",
+            param_hash,
+            max_time,
+        )
+        return None
+
     try:
         candles = hct.fetch_candles(client, settings)
     except ValueError as exc:
@@ -90,7 +100,9 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
         log.warning("param_hash=%s: расчёт %s: %s", param_hash, indicator, exc)
         return None
 
-    written = values.insert_values(client, param_hash, candles.times, series)
+    written = values.insert_values(
+        client, param_hash, candles.times, series, after=max_time
+    )
     log.info(
         "param_hash=%s indicator=%s candles=%s written=%s params=%s",
         param_hash,
@@ -100,3 +112,13 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
         params,
     )
     return settings
+
+
+def end_after_max_time(settings: pb.Settings, max_time: datetime | None) -> bool:
+    """Считать, только если значений ещё нет или settings.end > max_time."""
+    if max_time is None:
+        return True
+    if not settings.HasField("end"):
+        return True
+    end = settings.end.ToDatetime().replace(tzinfo=timezone.utc)
+    return end > max_time

@@ -16,9 +16,9 @@ var (
 
 var deterministicMarshal = proto.MarshalOptions{Deterministic: true}
 
-// Hash64 — SHA-256(канонический Settings)[:8] little-endian как uint64.
+// Hash64 — SHA-256(канонический Settings без End)[:8] little-endian как uint64.
 func Hash64(settings *indpb.Settings) (uint64, error) {
-	payload, err := CanonicalBytes(settings)
+	payload, err := canonicalBytes(settings, false)
 	if err != nil {
 		return 0, err
 	}
@@ -28,6 +28,10 @@ func Hash64(settings *indpb.Settings) (uint64, error) {
 
 // CanonicalBytes сериализует Settings с тем же набором полей, что хранится в request.
 func CanonicalBytes(settings *indpb.Settings) ([]byte, error) {
+	return canonicalBytes(settings, true)
+}
+
+func canonicalBytes(settings *indpb.Settings, includeEnd bool) ([]byte, error) {
 	if settings == nil || settings.GetSettings() == nil {
 		return nil, ErrSettingsRequired
 	}
@@ -42,7 +46,7 @@ func CanonicalBytes(settings *indpb.Settings) ([]byte, error) {
 	if settings.Start != nil {
 		canonical.Start = settings.Start
 	}
-	if settings.End != nil {
+	if includeEnd && settings.End != nil {
 		canonical.End = settings.End
 	}
 	return deterministicMarshal.Marshal(canonical)
