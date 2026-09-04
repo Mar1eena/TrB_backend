@@ -18,7 +18,7 @@ func FetchRequest(ctx context.Context, conn driver.Conn, paramHash uint64) ([]by
 	err := conn.QueryRow(ctx, `
 SELECT hex(request)
 FROM `+AssignmentsTable+` FINAL
-WHERE param_hash = $1
+WHERE param_hash = ?
 LIMIT 1
 `, paramHash).Scan(&raw)
 	if err != nil {

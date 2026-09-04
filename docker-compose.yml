@@ -188,7 +188,9 @@ services:
     command: ["python", "/app/main.py"]
     environment:
       - APP_RUNTIME=docker
+      - INDICATORS_NATS_STREAM=indicators_task
       - INDICATORS_NATS_SUBJECT=TrB.indicators.tasks
+      - INDICATORS_NATS_CONSUMER=indicators_calculation
       - NATS_URL
       - NATS_URL_DOCKER
       - CLICKHOUSE_URL

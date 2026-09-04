@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Подписчик TrB.indicators.tasks: без gRPC, JSONEachRow → indicator_assignments → Settings."""
+"""JetStream consumer TrB.indicators.tasks: JSONEachRow → assignments → Settings, ACK после обработки."""
 
 from __future__ import annotations
 
@@ -15,18 +15,22 @@ if str(_ROOT) not in sys.path:
 
 import envutil
 from clickhouse_client import close_client, init_client
-from worker import TaskError, process_payload
+from jsconsumer import (
+    DEFAULT_CONSUMER,
+    DEFAULT_STREAM,
+    DEFAULT_SUBJECT,
+    bind_pull,
+    consume_forever,
+)
 
 log = logging.getLogger(__name__)
-
-DEFAULT_SUBJECT = "TrB.indicators.tasks"
-DEFAULT_QUEUE = "indicators-calculation"
 
 
 async def _run() -> None:
     envutil.load()
+    stream = envutil.get("INDICATORS_NATS_STREAM") or DEFAULT_STREAM
     subject = envutil.get("INDICATORS_NATS_SUBJECT") or DEFAULT_SUBJECT
-    queue = envutil.get("INDICATORS_NATS_QUEUE") or DEFAULT_QUEUE
+    durable = envutil.get("INDICATORS_NATS_CONSUMER") or DEFAULT_CONSUMER
     nats_url = envutil.addr("NATS_URL", "NATS_URL_DOCKER", "nats://localhost:4222")
 
     ch = init_client()
@@ -38,17 +42,15 @@ async def _run() -> None:
         reconnect_time_wait=2,
         max_reconnect_attempts=-1,
     )
-    log.info("calculation подписан на %s (queue=%s, nats=%s)", subject, queue, nats_url)
-
-    async def handler(msg) -> None:
-        try:
-            process_payload(ch, msg.data)
-        except TaskError as exc:
-            log.warning("задание отклонено: %s", exc)
-        except Exception:
-            log.exception("ошибка обработки TrB.indicators.tasks")
-
-    await nc.subscribe(subject, queue=queue, cb=handler)
+    js = nc.jetstream()
+    psub = await bind_pull(js, stream, durable)
+    log.info(
+        "calculation JetStream %s/%s subject=%s nats=%s",
+        stream,
+        durable,
+        subject,
+        nats_url,
+    )
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -58,7 +60,7 @@ async def _run() -> None:
         except NotImplementedError:
             signal.signal(sig, lambda *_: stop.set())
 
-    await stop.wait()
+    await consume_forever(psub, ch, stop)
     await nc.drain()
     close_client()
     log.info("calculation остановлен")
@@ -67,7 +69,7 @@ async def _run() -> None:
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     try:
         asyncio.run(_run())

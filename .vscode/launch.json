@@ -61,7 +61,9 @@
             "envFile": "${workspaceFolder}/.env",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/internal/services/indicators/calculation",
-                "INDICATORS_NATS_SUBJECT": "TrB.indicators.tasks"
+                "INDICATORS_NATS_STREAM": "indicators_task",
+                "INDICATORS_NATS_SUBJECT": "TrB.indicators.tasks",
+                "INDICATORS_NATS_CONSUMER": "indicators_calculation"
             },
             "justMyCode": false
         },

@@ -61,10 +61,12 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
         return None
 
     log.info(
-        "задание param_hash=%s uid=%s interval=%s indicator=%s",
+        "задание param_hash=%s uid=%s interval=%s start=%s end=%s indicator=%s",
         param_hash,
         settings.uid,
         settings.interval,
+        settings.start,
+        settings.end,
         indicator_type_name(settings),
     )
     return settings

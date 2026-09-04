@@ -139,7 +139,43 @@
           "_nats.req.level": "0"
         }
       },
-      "consumers": []
+      "consumers": [
+        {
+          "durable": "indicators_calculation",
+          "name": "indicators_calculation",
+          "description": "Расчёт индикаторов: JSONEachRow param_hash из TrB.indicators.tasks",
+          "filter_subject": "TrB.indicators.tasks",
+          "filter_subjects": [
+            "TrB.indicators.tasks"
+          ],
+          "deliver_policy": 0,
+          "opt_start_seq": 0,
+          "opt_start_time": "",
+          "ack_policy": 2,
+          "max_deliver": 5,
+          "max_ack_pending": 1,
+          "max_waiting": 512,
+          "ack_wait": 300000000000,
+          "backoff": [],
+          "replay_policy": 0,
+          "rate_limit_bps": 0,
+          "sample_freq": "",
+          "flow_control": false,
+          "idle_heartbeat": 0,
+          "headers_only": false,
+          "max_request_batch": 0,
+          "max_request_expires": 0,
+          "max_request_max_bytes": 0,
+          "deliver_subject": "",
+          "deliver_group": "",
+          "inactive_threshold": 0,
+          "replicas": 0,
+          "memory_storage": false,
+          "metadata": {
+            "_nats.req.level": "0"
+          }
+        }
+      ]
     }
   ]
 }
