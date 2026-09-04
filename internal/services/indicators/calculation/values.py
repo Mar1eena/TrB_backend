@@ -47,11 +47,11 @@ def rows_from_series(
     keys = metric_keys(series)
     arrays = [series[k] for k in keys]
     n = len(times)
-    after_utc = _as_utc(after) if after is not None else None
+    # after_utc = _as_utc(after) if after is not None else None
     rows: list[list[object]] = []
     for i in range(n):
-        if after_utc is not None and _as_utc(times[i]) <= after_utc:
-            continue
+        # if after_utc is not None and _as_utc(times[i]) <= after_utc:
+        #     a = 1
         metrics: list[float] = []
         skip = False
         for arr in arrays:
