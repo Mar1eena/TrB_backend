@@ -1,4 +1,4 @@
-"""Обработка сообщений TrB.indicators.tasks: JSONEachRow → assignment → Settings."""
+"""Обработка сообщений TrB.indicators.tasks: JSONEachRow → assignment → HCT → индикатор."""
 
 from __future__ import annotations
 
@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, Any
 from indicators import indicators_pb2 as pb
 
 import assignments
+import hct
+import values
+from calc import ComputeError, compute_from_settings
 from json_each_row import parse_json_each_row, parse_uint64
 from settings_codec import SettingsCodecError, decode_request, indicator_type_name
 
@@ -22,7 +25,7 @@ class TaskError(Exception):
 
 
 def process_payload(client: Client, payload: bytes) -> list[pb.Settings]:
-    """Разбирает JSONEachRow и для каждого param_hash поднимает Settings из assignments."""
+    """Разбирает JSONEachRow, считает индикатор по HCT и пишет в indicator_values."""
     try:
         rows = parse_json_each_row(payload)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -60,13 +63,40 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
         log.warning("param_hash=%s: %s", param_hash, exc)
         return None
 
+    indicator = indicator_type_name(settings)
     log.info(
         "задание param_hash=%s uid=%s interval=%s start=%s end=%s indicator=%s",
         param_hash,
         settings.uid,
         settings.interval,
-        settings.start,
-        settings.end,
-        indicator_type_name(settings),
+        settings.start.ToJsonString() if settings.HasField("start") else "",
+        settings.end.ToJsonString() if settings.HasField("end") else "",
+        indicator,
+    )
+
+    try:
+        candles = hct.fetch_candles(client, settings)
+    except ValueError as exc:
+        log.warning("param_hash=%s: выборка HCT: %s", param_hash, exc)
+        return None
+
+    try:
+        spec, params, series = compute_from_settings(
+            settings.settings,
+            candles.times,
+            candles.ohlcv,
+        )
+    except ComputeError as exc:
+        log.warning("param_hash=%s: расчёт %s: %s", param_hash, indicator, exc)
+        return None
+
+    written = values.insert_values(client, param_hash, candles.times, series)
+    log.info(
+        "param_hash=%s indicator=%s candles=%s written=%s params=%s",
+        param_hash,
+        spec.name,
+        len(candles),
+        written,
+        params,
     )
     return settings
