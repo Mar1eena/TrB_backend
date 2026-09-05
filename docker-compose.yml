@@ -191,6 +191,13 @@ services:
       - INDICATORS_NATS_STREAM=indicators_task
       - INDICATORS_NATS_SUBJECT=TrB.indicators.tasks
       - INDICATORS_NATS_CONSUMER=indicators_calculation
+      - INDICATORS_CONCURRENCY
+      - INDICATORS_FETCH_BATCH
+      - INDICATORS_NAK_DELAY_SEC
+      - INDICATORS_WARMUP_MARGIN_BARS
+      - INDICATORS_METRICS_ADDR=:9105
+      - INDICATORS_CH_CONNECT_RETRIES
+      - INDICATORS_CH_CONNECT_BACKOFF_SEC
       - NATS_URL
       - NATS_URL_DOCKER
       - CLICKHOUSE_URL
@@ -199,6 +206,12 @@ services:
       - CLICKHOUSE_USER
       - CLICKHOUSE_USERNAME
       - CLICKHOUSE_PASSWORD
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9105/healthz').status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       - clickhouse-db
       - nats-server

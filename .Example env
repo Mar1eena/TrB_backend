@@ -76,6 +76,15 @@ CLICKHOUSE_API_URL_DOCKER=clickhouse:9091
 INDICATORS_API_URL=localhost:9093
 INDICATORS_API_URL_DOCKER=indicators:9093
 
+#Indicators calculation worker
+INDICATORS_CONCURRENCY=1              # параллельных обработчиков (= клиентов ClickHouse)
+INDICATORS_FETCH_BATCH=1             # сообщений за один fetch (по умолчанию = CONCURRENCY)
+INDICATORS_NAK_DELAY_SEC=5           # пауза перед повторной доставкой задания при сбое
+INDICATORS_WARMUP_MARGIN_BARS=250   # запас баров сверх lookback для инкрементального расчёта
+INDICATORS_METRICS_ADDR=:9105       # HTTP /metrics,/healthz,/readyz; :0 — выключить
+INDICATORS_CH_CONNECT_RETRIES=30   # попыток подключения к ClickHouse на старте (-1 = бесконечно)
+INDICATORS_CH_CONNECT_BACKOFF_SEC=2
+
 #Historic candle service
 INTERVAL_UPDATE_HC = 30 # интервал обновления свечей в секундах
 

@@ -16,4 +16,7 @@ RUN pip install --no-cache-dir --upgrade trb-proto && rm -f /tmp/trb-proto.json
 
 COPY internal/services/indicators/calculation/ /app/
 
+# HTTP /metrics, /healthz, /readyz (INDICATORS_METRICS_ADDR, по умолчанию :9105)
+EXPOSE 9105
+
 CMD ["python", "/app/main.py"]

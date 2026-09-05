@@ -10,9 +10,17 @@ from indicators import indicators_pb2 as pb
 
 import assignments
 import hct
+import metrics
 import values
 from calc import ComputeError, compute_from_settings
+from envutil import get as env_get
 from json_each_row import parse_json_each_row, parse_uint64
+from registry import (
+    params_from_indicator_settings,
+    required_bars,
+    resolve_params,
+    spec_from_settings,
+)
 from settings_codec import SettingsCodecError, decode_request, indicator_type_name
 
 if TYPE_CHECKING:
@@ -20,9 +28,22 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Запас баров сверх lookback индикатора для инкрементального пересчёта.
+_DEFAULT_WARMUP_MARGIN = 250
+
 
 class TaskError(Exception):
     """Некорректное задание из NATS."""
+
+
+def _warmup_margin() -> int:
+    raw = env_get("INDICATORS_WARMUP_MARGIN_BARS")
+    if not raw:
+        return _DEFAULT_WARMUP_MARGIN
+    try:
+        return max(int(raw), 0)
+    except ValueError:
+        return _DEFAULT_WARMUP_MARGIN
 
 
 def process_payload(client: Client, payload: bytes) -> list[pb.Settings]:
@@ -46,22 +67,26 @@ def process_payload(client: Client, payload: bytes) -> list[pb.Settings]:
 def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
     if "param_hash" not in row:
         log.warning("в строке JSONEachRow нет param_hash: %s", list(row.keys()))
+        metrics.record_outcome(metrics.OUTCOME_BAD_ROW)
         return None
     try:
         param_hash = parse_uint64(row["param_hash"])
     except ValueError as exc:
         log.warning("некорректный param_hash: %s", exc)
+        metrics.record_outcome(metrics.OUTCOME_BAD_ROW)
         return None
 
     raw = assignments.fetch_request_bytes(client, param_hash)
     if raw is None:
         log.warning("нет assignment для param_hash=%s", param_hash)
+        metrics.record_outcome(metrics.OUTCOME_NO_ASSIGNMENT)
         return None
 
     try:
         settings = decode_request(raw)
     except SettingsCodecError as exc:
         log.warning("param_hash=%s: %s", param_hash, exc)
+        metrics.record_outcome(metrics.OUTCOME_DECODE_ERROR)
         return None
 
     indicator = indicator_type_name(settings)
@@ -82,12 +107,20 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
             param_hash,
             max_time,
         )
+        metrics.record_outcome(metrics.OUTCOME_UP_TO_DATE)
         return None
 
+    tail_bars = _tail_bars(settings, max_time)
+
     try:
-        candles = hct.fetch_candles(client, settings)
+        candles = hct.fetch_candles(client, settings, tail_bars=tail_bars)
     except ValueError as exc:
         log.warning("param_hash=%s: выборка HCT: %s", param_hash, exc)
+        metrics.record_outcome(metrics.OUTCOME_NO_CANDLES)
+        return None
+    if len(candles) == 0:
+        log.warning("param_hash=%s: нет свечей в TrB.hct", param_hash)
+        metrics.record_outcome(metrics.OUTCOME_NO_CANDLES)
         return None
 
     try:
@@ -98,6 +131,12 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
         )
     except ComputeError as exc:
         log.warning("param_hash=%s: расчёт %s: %s", param_hash, indicator, exc)
+        outcome = (
+            metrics.OUTCOME_INSUFFICIENT
+            if "недостаточно свечей" in str(exc)
+            else metrics.OUTCOME_COMPUTE_ERROR
+        )
+        metrics.record_outcome(outcome)
         return None
 
     written = values.insert_values(
@@ -116,7 +155,25 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
         written,
         params,
     )
+    metrics.record_outcome(metrics.OUTCOME_COMPUTED)
+    metrics.record_points_written(written)
     return settings
+
+
+def _tail_bars(settings: pb.Settings, max_time: datetime | None) -> int | None:
+    """Для инкрементального пересчёта — ограничить выборку HCT хвостом.
+
+    Первый полный расчёт (max_time is None) читает весь диапазон settings.start..end.
+    """
+    if max_time is None:
+        return None
+    try:
+        spec = spec_from_settings(settings.settings)
+        params = resolve_params(spec, params_from_indicator_settings(settings.settings))
+        need = required_bars(spec, params)
+    except KeyError:
+        need = 1
+    return need + _warmup_margin()
 
 
 def end_after_max_time(settings: pb.Settings, max_time: datetime | None) -> bool:

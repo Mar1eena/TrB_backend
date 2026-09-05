@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -109,6 +110,29 @@ def create_client() -> Client:
     return clickhouse_connect.get_client(**kwargs)
 
 
+def connect_with_retry() -> Client:
+    """Создаёт клиента и ждёт готовности ClickHouse (backoff), не падая сразу на старте."""
+    retries = _env_int("INDICATORS_CH_CONNECT_RETRIES", 30)
+    backoff = _env_int("INDICATORS_CH_CONNECT_BACKOFF_SEC", 2)
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            client = create_client()
+            client.query("SELECT 1")
+            return client
+        except Exception as exc:  # noqa: BLE001 — любая ошибка соединения/запроса
+            if retries >= 0 and attempt > retries:
+                raise
+            log.warning(
+                "ClickHouse недоступен (попытка %s): %s; повтор через %s с",
+                attempt,
+                exc,
+                backoff,
+            )
+            time.sleep(backoff)
+
+
 def init_client() -> Client:
     """Инициализирует постоянное подключение к ClickHouse и проверяет его доступность."""
     global _client
@@ -120,9 +144,7 @@ def init_client() -> Client:
                 pass
             _client = None
 
-        client = create_client()
-        client.query("SELECT 1")
-        _client = client
+        _client = connect_with_retry()
         return _client
 
 

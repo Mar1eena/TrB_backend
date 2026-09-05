@@ -15,8 +15,9 @@ from indicators import indicators_pb2 as pb
 from indicators import params_pb2 as params_pb
 from google.protobuf.timestamp_pb2 import Timestamp
 
+import metrics
 from settings_codec import encode_request
-from worker import process_payload
+from worker import _tail_bars, process_payload
 
 
 def _rsi(uid: str = "SBER", interval: int = 15) -> pb.Settings:
@@ -135,10 +136,57 @@ def test_insufficient_candles() -> None:
     client.insert.assert_not_called()
 
 
+def test_tail_bars_none_on_first_run() -> None:
+    assert _tail_bars(_rsi(), None) is None
+
+
+def test_tail_bars_bounded_on_incremental() -> None:
+    n = _tail_bars(_rsi(), datetime(2024, 1, 2, tzinfo=timezone.utc))
+    assert n is not None and n > 14  # lookback RSI + запас
+
+
+def test_incremental_fetch_limits_history() -> None:
+    settings = _rsi()
+    raw = encode_request(settings)
+    client = MagicMock()
+    assign = MagicMock()
+    assign.result_rows = [[raw.hex()]]
+    candles = MagicMock()
+    candles.result_rows = _hct_rows(40)
+    max_time = datetime(2024, 1, 1, 0, 10, tzinfo=timezone.utc)
+    client.query.side_effect = [assign, _agg(max_time), candles]
+    process_payload(client, b'{"param_hash":1}\n')
+    hct_sql = client.query.call_args_list[2].args[0]
+    assert "ORDER BY time DESC" in hct_sql
+    assert "LIMIT" in hct_sql
+
+
+def test_no_assignment_records_metric() -> None:
+    client = MagicMock()
+    client.query.return_value.result_rows = []
+    before = metrics.METRICS.render()
+    process_payload(client, b'{"param_hash":5}\n')
+    after = metrics.METRICS.render()
+    b = _counter(before, 'outcome="no_assignment"')
+    a = _counter(after, 'outcome="no_assignment"')
+    assert a == b + 1
+
+
+def _counter(text: str, needle: str) -> float:
+    for line in text.splitlines():
+        if needle in line:
+            return float(line.rsplit(" ", 1)[1])
+    return 0.0
+
+
 if __name__ == "__main__":
     test_process_payload_computes_and_writes()
     test_missing_assignment()
     test_skips_when_end_not_after_max_time()
     test_writes_only_after_max_time()
     test_insufficient_candles()
+    test_tail_bars_none_on_first_run()
+    test_tail_bars_bounded_on_incremental()
+    test_incremental_fetch_limits_history()
+    test_no_assignment_records_metric()
     print("ok")

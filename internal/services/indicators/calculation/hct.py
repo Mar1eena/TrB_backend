@@ -24,8 +24,18 @@ class CandleSeries:
         return len(self.times)
 
 
-def fetch_candles(client: Client, settings: pb.Settings) -> CandleSeries:
-    """Выбирает OHLCV из TrB.hct по uid/interval и опциональным start/end."""
+def fetch_candles(
+    client: Client,
+    settings: pb.Settings,
+    *,
+    tail_bars: int | None = None,
+) -> CandleSeries:
+    """Выбирает OHLCV из TrB.hct по uid/interval и опциональным start/end.
+
+    tail_bars ограничивает выборку последними N барами диапазона — для
+    инкрементальных пересчётов, чтобы не перечитывать всю историю каждый раз
+    (первый полный расчёт вызывает без tail_bars).
+    """
     uid = (settings.uid or "").strip()
     if not uid:
         raise ValueError("uid обязателен для выборки свечей")
@@ -47,18 +57,28 @@ def fetch_candles(client: Client, settings: pb.Settings) -> CandleSeries:
         where.append("time <= {end:DateTime64(6)}")
         params["end"] = _ts(settings.end)
 
-    sql = f"""
-SELECT
-    time,
-    open,
-    high,
-    low,
-    close,
-    volume
-FROM {HCT_TABLE} FINAL
-WHERE {" AND ".join(where)}
+    cols = "time, open, high, low, close, volume"
+    where_sql = " AND ".join(where)
+    if tail_bars is not None and tail_bars > 0:
+        params["tail"] = int(tail_bars)
+        sql = f"""
+SELECT {cols} FROM (
+    SELECT {cols}
+    FROM {HCT_TABLE} FINAL
+    WHERE {where_sql}
+    ORDER BY time DESC
+    LIMIT {{tail:UInt64}}
+)
 ORDER BY time ASC
 """
+    else:
+        sql = f"""
+SELECT {cols}
+FROM {HCT_TABLE} FINAL
+WHERE {where_sql}
+ORDER BY time ASC
+"""
+
     result = client.query(sql, parameters=params)
     times: list[datetime] = []
     opens: list[float] = []

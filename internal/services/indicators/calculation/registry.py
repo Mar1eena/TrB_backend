@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable
 
@@ -12,6 +13,10 @@ from talib import abstract
 
 from indicators import params_pb2 as params_pb
 from indicators import values_pb2 as values_pb
+
+from metrics import record_unmatched_params
+
+log = logging.getLogger(__name__)
 
 Series = dict[str, np.ndarray]
 CalcFn = Callable[[Series, dict[str, float]], dict[str, np.ndarray]]
@@ -55,6 +60,14 @@ TALIB_OUTPUT_TO_PROTO_KEY: dict[str, str] = {
     "fama": "fama",
 }
 
+_INT_PARAM_MARKERS = ("period", "matype")
+_FLOAT_PARAM_NAMES = frozenset(
+    {"nbdev", "nbdevup", "nbdevdn", "penetration", "startvalue", "offsetonreverse", "vfactor",
+     "fastlimit", "slowlimit", "acceleration", "maximum", "accelerationinitlong",
+     "accelerationlong", "accelerationmaxlong", "accelerationinitshort", "accelerationshort",
+     "accelerationmaxshort"}
+)
+
 
 def _get_proto_keys_for_indicator(indicator_name: str) -> list[str]:
     """Извлекает имена полей точки временного ряда из values.proto."""
@@ -66,10 +79,61 @@ def _get_proto_keys_for_indicator(indicator_name: str) -> list[str]:
     return [f.name for f in point_msg.fields if f.name != "time"]
 
 
-def _make_talib_calc_fn(
-    func_name: str,
-    output_keys: list[str],
-) -> CalcFn:
+def _match_param_key(talib_name: str, params: dict[str, float]) -> str | None:
+    """Ключ params, который отвечает за аргумент TA-Lib talib_name (или None)."""
+    clean = talib_name.replace("_", "").lower()
+    if talib_name in params:
+        return talib_name
+    if talib_name == "timeperiod" and "period" in params:
+        return "period"
+    if talib_name == "vfactor" and "v_factor" in params:
+        return "v_factor"
+    if talib_name in ("timeperiod1", "timeperiod2", "timeperiod3"):
+        alt = f"period{talib_name[-1]}"
+        if alt in params:
+            return alt
+    for pk in params:
+        if pk.replace("_", "").lower() == clean:
+            return pk
+    return None
+
+
+def _coerce_param(talib_name: str, value: float) -> float | int:
+    if any(m in talib_name for m in _INT_PARAM_MARKERS):
+        return int(value)
+    if talib_name in _FLOAT_PARAM_NAMES:
+        return float(value)
+    return value
+
+
+def resolve_talib_kwargs(
+    talib_param_names: list[str], params: dict[str, float]
+) -> tuple[dict[str, float | int], list[str]]:
+    """kwargs для вызова TA-Lib и список ключей params, которые никуда не легли."""
+    kwargs: dict[str, float | int] = {}
+    consumed: set[str] = set()
+    for tp in talib_param_names:
+        pk = _match_param_key(tp, params)
+        if pk is None:
+            continue
+        kwargs[tp] = _coerce_param(tp, params[pk])
+        consumed.add(pk)
+    unmatched = [k for k in params if k not in consumed]
+    return kwargs, unmatched
+
+
+def talib_lookback(func_name: str, params: dict[str, float]) -> int:
+    """Точное число баров, которое TA-Lib «съедает» на разогрев при данных параметрах."""
+    try:
+        fn = abstract.Function(func_name)
+        kwargs, _ = resolve_talib_kwargs(list(fn.parameters.keys()), params)
+        fn.set_parameters(**{k: v for k, v in kwargs.items() if k in fn.parameters})
+        return max(int(fn.lookback), 0)
+    except Exception:  # noqa: BLE001 — не роняем расчёт из-за abstract API
+        return 0
+
+
+def _make_talib_calc_fn(func_name: str, output_keys: list[str]) -> CalcFn:
     """Создает функцию расчета на основе TA-Lib Function API."""
     fn = abstract.Function(func_name)
     input_specs = list(fn.input_names.items())
@@ -77,23 +141,17 @@ def _make_talib_calc_fn(
     talib_output_names = fn.output_names
 
     def calc(ohlcv: Series, params: dict[str, float]) -> dict[str, np.ndarray]:
-        # Подготовка входных массивов
         args: list[np.ndarray] = []
-        for input_key, spec in input_specs:
+        for input_key, spec in input_specs:  # noqa: B007
             names = spec if isinstance(spec, (list, tuple)) else [spec]
             for col in names:
                 if col in ohlcv:
                     args.append(ohlcv[col])
                 elif col == "periods":
-                    min_p = float(params.get("min_period", 2))
-                    max_p = float(params.get("max_period", 30))
-                    default_p = min(max_p, max(min_p, 10.0))
-                    n = len(ohlcv.get("close", []))
-                    args.append(np.full(n, default_p, dtype=np.float64))
+                    args.append(_periods_vector(ohlcv, params))
                 elif col == "price":
                     args.append(ohlcv["close"])
                 elif col == "prices":
-                    # default fallback
                     args.append(ohlcv.get("close", ohlcv.get("open")))
                 elif col == "price0":
                     args.append(ohlcv.get("high", ohlcv["close"]))
@@ -102,38 +160,14 @@ def _make_talib_calc_fn(
                 else:
                     raise KeyError(f"Неизвестный входной массив {col} для функции {func_name}")
 
-        # Подготовка kwargs параметров для TA-Lib
-        fn_kwargs: dict[str, float | int] = {}
-        for tp in talib_param_names:
-            clean_tp = tp.replace("_", "").lower()
-            val = None
-            # 1. Точное совпадение
-            if tp in params:
-                val = params[tp]
-            # 2. timeperiod <-> period
-            elif tp == "timeperiod" and "period" in params:
-                val = params["period"]
-            elif tp == "vfactor" and "v_factor" in params:
-                val = params["v_factor"]
-            elif tp in ("timeperiod1", "timeperiod2", "timeperiod3"):
-                num = tp[-1]
-                if f"period{num}" in params:
-                    val = params[f"period{num}"]
-            else:
-                # 3. Поиск по нормализованному имени без подчеркиваний
-                for pk, pv in params.items():
-                    if pk.replace("_", "").lower() == clean_tp:
-                        val = pv
-                        break
-            if val is not None:
-                # Целочисленные параметры преобразуем в int
-                if "period" in tp or "matype" in tp or tp in ("nbdev", "penetration", "startvalue", "offsetonreverse"):
-                    if "period" in tp or "matype" in tp:
-                        fn_kwargs[tp] = int(val)
-                    else:
-                        fn_kwargs[tp] = float(val)
-                else:
-                    fn_kwargs[tp] = val
+        fn_kwargs, unmatched = resolve_talib_kwargs(talib_param_names, params)
+        if unmatched:
+            log.warning(
+                "%s: параметры не сопоставлены с аргументами TA-Lib, используются дефолты: %s",
+                func_name,
+                unmatched,
+            )
+            record_unmatched_params(len(unmatched))
 
         raw_out = getattr(talib, func_name)(*args, **fn_kwargs)
         seq_out = raw_out if isinstance(raw_out, tuple) else (raw_out,)
@@ -142,7 +176,6 @@ def _make_talib_calc_fn(
         for i, out_name in enumerate(talib_output_names):
             proto_key = TALIB_OUTPUT_TO_PROTO_KEY.get(out_name)
             if not proto_key or proto_key not in output_keys:
-                # Позиционное сопоставление
                 proto_key = output_keys[i] if i < len(output_keys) else out_name
             res[proto_key] = np.asarray(seq_out[i], dtype=np.float64)
         return res
@@ -150,11 +183,21 @@ def _make_talib_calc_fn(
     return calc
 
 
+def _periods_vector(ohlcv: Series, params: dict[str, float]) -> np.ndarray:
+    """Вектор периодов для MAVP: пер-баровых периодов у нас нет, берём max_period как константу."""
+    n = len(ohlcv.get("close", ohlcv.get("open", ())))
+    period = params.get("period")
+    if period is None:
+        min_p = float(params.get("min_period", 2))
+        max_p = float(params.get("max_period", 30))
+        period = max(min_p, max_p)
+    return np.full(n, float(period), dtype=np.float64)
+
+
 def _build_registry() -> dict[str, IndicatorSpec]:
     registry: dict[str, IndicatorSpec] = {}
     talib_functions = set(talib.get_functions())
 
-    # Автоматическая регистрация всех функций TA-Lib
     p_desc = params_pb.IndicatorSettings.DESCRIPTOR
     for field in p_desc.fields:
         name = field.name
@@ -181,7 +224,7 @@ def _build_registry() -> dict[str, IndicatorSpec]:
                             break
                     default_params[proto_param_name] = float(tval)
 
-            min_bars = int(default_params.get("period", 1))
+            min_bars = talib_lookback(uname, default_params) + 1
             if min_bars < 1:
                 min_bars = 1
 
@@ -205,6 +248,11 @@ def resolve_params(spec: IndicatorSpec, raw: dict[str, float]) -> dict[str, floa
     merged = dict(spec.default_params)
     merged.update(raw)
     return merged
+
+
+def required_bars(spec: IndicatorSpec, params: dict[str, float]) -> int:
+    """Сколько баров нужно, чтобы получить хотя бы одно валидное значение."""
+    return talib_lookback(spec.name, params) + 1
 
 
 def params_from_indicator_settings(settings: params_pb.IndicatorSettings) -> dict[str, float]:

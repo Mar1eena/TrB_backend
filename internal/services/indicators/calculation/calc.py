@@ -9,6 +9,7 @@ import numpy as np
 from registry import (
     IndicatorSpec,
     params_from_indicator_settings,
+    required_bars,
     resolve_params,
     spec_from_settings,
 )
@@ -25,7 +26,7 @@ def compute_arrays(
     times: list[datetime] | np.ndarray,
     ohlcv: dict[str, np.ndarray],
 ) -> dict[str, np.ndarray]:
-    min_bars = max(spec.min_bars, int(params.get("period", spec.min_bars)))
+    min_bars = max(required_bars(spec, params), 1)
     if len(times) < min_bars:
         raise ComputeError(
             f"недостаточно свечей: нужно минимум {min_bars}, получено {len(times)}"
