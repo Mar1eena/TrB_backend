@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Any
 
@@ -30,9 +31,9 @@ def _indicator_source() -> str:
 def _indicator_wait_sec() -> float:
     raw = envutil.get("STRATEGY_INDICATOR_WAIT_SEC")
     try:
-        return float(raw) if raw else 180.0
+        return float(raw) if raw else 60.0
     except ValueError:
-        return 180.0
+        return 60.0
 
 
 def _default_version() -> str:
@@ -104,6 +105,10 @@ def resolve_indicator_lines(
     candle_times = [ts.to_pydatetime() for ts in df.index]
     wait_sec = _indicator_wait_sec()
     out: dict[str, np.ndarray] = {}
+
+    # 1. заказываем расчёт всех индикаторов сразу — calculation считает их
+    #    параллельно, а не по одному после каждого ожидания.
+    pending: list[tuple[Any, str, int]] = []
     for ref in spec.indicators:
         name = ind_mod.indicator_type_name(ref.settings)
         if not name:
@@ -113,7 +118,19 @@ def resolve_indicator_lines(
                 ch_client, publish, uid=uid, interval=interval,
                 indicator_settings=ref.settings, start=start, end=end,
             )
-            ch_indicators.wait_for_coverage(ch_client, h, start, end, timeout_sec=wait_sec)
+            pending.append((ref, name, h))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("индикатор %s: ошибка заказа (%s) — движок посчитает сам", ref.id, exc)
+
+    # 2. ждём покрытия с ОБЩИМ дедлайном — ожидания перекрываются.
+    deadline = time.monotonic() + wait_sec
+    for ref, name, h in pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log.warning("индикатор %s: бюджет ожидания исчерпан — движок посчитает сам", ref.id)
+            continue
+        try:
+            ch_indicators.wait_for_coverage(ch_client, h, start, end, timeout_sec=remaining)
             keys = ch_indicators.output_keys_for(name)
             series = ch_indicators.load_series(
                 ch_client, h, ref.output_key, keys, candle_times, start, end,

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING
 
 import metrics
+from clickhouse_client import create_client
 from runner import BacktestError, run_backtest
 from search.runner import SearchError, run_search
 from strategy import backtest_pb2, search_pb2
@@ -27,33 +29,88 @@ FETCH_TIMEOUT_SEC = 5.0
 NAK_DELAY_SEC = 15.0
 
 
+def _backtest_concurrency() -> int:
+    raw = os.environ.get("STRATEGY_BACKTEST_CONCURRENCY")
+    try:
+        return max(1, min(8, int(raw))) if raw else 3
+    except ValueError:
+        return 3
+
+
 async def bind(js: JetStreamContext, durable: str):
     return await js.pull_subscribe_bind(consumer=durable, stream=STREAM)
 
 
 async def consume_backtest(js, ch_client: Client, stop: asyncio.Event, *, publish=None, nak_delay: float = NAK_DELAY_SEC) -> None:
     psub = await bind(js, CONSUMER_BACKTEST)
-    log.info("backtest консьюмер привязан (%s/%s)", STREAM, CONSUMER_BACKTEST)
-    await _loop(psub, stop, lambda ch, data: _handle_backtest(ch, data, publish), ch_client, nak_delay)
+    concurrency = _backtest_concurrency()
+    log.info("backtest консьюмер привязан (%s/%s), параллельно до %d", STREAM, CONSUMER_BACKTEST, concurrency)
+
+    # отдельный ClickHouse-клиент на каждый параллельный слот: clickhouse-connect
+    # не потокобезопасен, а обработчики бегут в разных потоках (asyncio.to_thread).
+    clients: list[Client] = [ch_client]
+    for _ in range(concurrency - 1):
+        try:
+            clients.append(await asyncio.to_thread(create_client))
+        except Exception:  # noqa: BLE001
+            log.exception("не удалось создать доп. ClickHouse-клиент — снижаю параллелизм")
+            break
+    pool: asyncio.Queue = asyncio.Queue()
+    for c in clients:
+        pool.put_nowait(c)
+
+    try:
+        await _loop(psub, stop, lambda ch, data: _handle_backtest(ch, data, publish), pool, nak_delay, len(clients))
+    finally:
+        for c in clients:
+            if c is ch_client:
+                continue
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 async def consume_search(js, ch_client: Client, stop: asyncio.Event, *, nak_delay: float = NAK_DELAY_SEC) -> None:
     psub = await bind(js, CONSUMER_SEARCH)
     log.info("search консьюмер привязан (%s/%s)", STREAM, CONSUMER_SEARCH)
-    await _loop(psub, stop, _handle_search, ch_client, nak_delay)
+    pool: asyncio.Queue = asyncio.Queue()
+    pool.put_nowait(ch_client)
+    await _loop(psub, stop, _handle_search, pool, nak_delay, 1)
 
 
-async def _loop(psub, stop: asyncio.Event, handler, ch_client, nak_delay: float) -> None:
-    while not stop.is_set():
+async def _loop(psub, stop: asyncio.Event, handler, pool: asyncio.Queue, nak_delay: float, concurrency: int = 1) -> None:
+    inflight: set[asyncio.Task] = set()
+
+    async def _run(msg) -> None:
+        ch = await pool.get()
         try:
-            msgs = await psub.fetch(1, timeout=FETCH_TIMEOUT_SEC)
+            await _process(msg, handler, ch, nak_delay)
+        finally:
+            pool.put_nowait(ch)
+
+    while not stop.is_set():
+        free = concurrency - len(inflight)
+        if free <= 0:
+            done, _ = await asyncio.wait(inflight, return_when=asyncio.FIRST_COMPLETED)
+            inflight -= done
+            continue
+        try:
+            msgs = await psub.fetch(free, timeout=FETCH_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001
             if stop.is_set() or "timeout" in type(exc).__name__.lower():
+                inflight = {t for t in inflight if not t.done()}
                 continue
             log.exception("fetch JetStream")
             continue
         for msg in msgs:
-            await _process(msg, handler, ch_client, nak_delay)
+            if concurrency == 1:
+                await _run(msg)
+            else:
+                inflight.add(asyncio.create_task(_run(msg)))
+        inflight = {t for t in inflight if not t.done()}
+    if inflight:
+        await asyncio.gather(*inflight, return_exceptions=True)
 
 
 async def _process(msg, handler, ch_client, nak_delay: float) -> None:
