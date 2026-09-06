@@ -1,9 +1,11 @@
-"""Индикаторы из общего пайплайна calculation через ClickHouse.
+"""Чтение готовых индикаторов из общего пайплайна calculation (ClickHouse).
 
-Поток: движок стратегий по каждому IndicatorRef собирает indicators.Settings,
-кладёт assignment в TrB_indicators.indicator_assignments, публикует задачу в
-NATS TrB.indicators.tasks; сервис calculation считает через TA-Lib и пишет в
-TrB_indicators.indicator_values; движок ждёт покрытия и читает готовые ряды.
+Заказ расчёта и ожидание статуса — в indicator_gateway.py (RPC indicators-manage
++ NATS TrB.indicators.status.<hash>). Здесь остаются: сборка indicators.Settings,
+проверка покрытия окна и выравнивание готового ряда по барам прогона.
+
+request_indicator / wait_for_coverage / param_hash — legacy-путь (прямой INSERT
+assignment + опрос ClickHouse), сохранён как запасной и для тестов.
 """
 
 from __future__ import annotations
@@ -48,7 +50,10 @@ def output_keys_for(indicator_name: str) -> list[str]:
     return [f.name for f in point_msg.fields if f.name != "time"]
 
 
-def _settings_message(uid: str, interval: int, indicator_settings, start: datetime, end: datetime) -> ind_pb.Settings:
+def build_settings_message(  # noqa: D401
+    uid: str, interval: int, indicator_settings, start: datetime, end: datetime
+) -> ind_pb.Settings:
+    """indicators.Settings для uid/interval/окна — вход для manage.UpdateSettings и хэша."""
     s = ind_pb.Settings()
     s.interval = int(interval)
     s.uid = uid
@@ -66,7 +71,7 @@ def param_hash(uid: str, interval: int, indicator_settings, start: datetime, end
     в истории будут дыры. Совпадать с Go spechash не требуется — движок сам и
     пишет assignment, и запрашивает по этому же хэшу.
     """
-    s = _settings_message(uid, interval, indicator_settings, start, end)
+    s = build_settings_message(uid, interval, indicator_settings, start, end)
     digest = hashlib.sha256(s.SerializeToString(deterministic=True)).digest()
     return int.from_bytes(digest[:8], "little")
 
@@ -83,7 +88,7 @@ def request_indicator(
 ) -> int:
     """Кладёт assignment и публикует задачу расчёта. Возвращает param_hash."""
     h = param_hash(uid, interval, indicator_settings, start, end)
-    settings = _settings_message(uid, interval, indicator_settings, start, end)
+    settings = build_settings_message(uid, interval, indicator_settings, start, end)
     client.insert(
         ASSIGN_TABLE,
         [[h, settings.SerializeToString()]],
@@ -91,6 +96,22 @@ def request_indicator(
     )
     publish(TASK_SUBJECT, (json.dumps({"param_hash": h}) + "\n").encode("utf-8"))
     return h
+
+
+def coverage_reached(client: Client, param_hash_val: int, end: datetime) -> bool:
+    """Один дешёвый запрос: дошли ли значения индикатора почти до конца окна."""
+    end_utc = _aware_utc(end)
+    res = client.query(
+        f"SELECT max(time) FROM {VALUES_TABLE} WHERE param_hash = {{h:UInt64}}",
+        parameters={"h": param_hash_val},
+    )
+    if not res.result_rows:
+        return False
+    max_t = res.result_rows[0][0]
+    if max_t is None:
+        return False
+    # ранние NaN-бары (разогрев) — норма; важно лишь, что расчёт дошёл до конца окна.
+    return _aware_utc(max_t) >= end_utc - _bar_slack(end_utc)
 
 
 def wait_for_coverage(
@@ -103,26 +124,14 @@ def wait_for_coverage(
     poll_sec: float = 2.0,
 ) -> None:
     """Ждёт, пока значения индикатора в ClickHouse дойдут почти до конца окна."""
-    end_utc = _aware_utc(end)
     _ = start
     deadline = time.monotonic() + timeout_sec
     while True:
-        # напрямую по values-таблице: ORDER BY (param_hash, time) => дешёвый диапазонный скан,
-        # не зависит от наличия agg-таблицы.
-        res = client.query(
-            f"SELECT min(time), max(time) FROM {VALUES_TABLE} WHERE param_hash = {{h:UInt64}}",
-            parameters={"h": param_hash_val},
-        )
-        if res.result_rows:
-            _min_t, max_t = res.result_rows[0]
-            if max_t is not None:
-                # ранние NaN-бары (разогрев индикатора) — норма, их гасит интерпретатор;
-                # важно лишь, что расчёт дошёл почти до конца окна.
-                if _aware_utc(max_t) >= end_utc - _bar_slack(end_utc):
-                    return
+        if coverage_reached(client, param_hash_val, end):
+            return
         if time.monotonic() >= deadline:
             raise IndicatorTimeout(
-                f"param_hash={param_hash_val}: значения не покрыли конец окна {end_utc} за {timeout_sec}с"
+                f"param_hash={param_hash_val}: значения не покрыли конец окна за {timeout_sec}с"
             )
         time.sleep(poll_sec)
 

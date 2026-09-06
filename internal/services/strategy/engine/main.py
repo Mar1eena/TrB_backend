@@ -52,10 +52,9 @@ async def _run() -> None:
 
     loop = asyncio.get_running_loop()
 
-    def publish(subject: str, payload: bytes) -> None:
-        """Синхронная публикация из рабочего потока (заказ расчёта индикаторов)."""
-        fut = asyncio.run_coroutine_threadsafe(nc.publish(subject, payload), loop)
-        fut.result(timeout=10)
+    from indicator_gateway import build_gateway
+
+    gateway = await asyncio.to_thread(build_gateway, nc, loop)
 
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -65,7 +64,7 @@ async def _run() -> None:
             signal.signal(sig, lambda *_: stop.set())
 
     await asyncio.gather(
-        consume_backtest(js, ch_backtest, stop, publish=publish),
+        consume_backtest(js, ch_backtest, stop, gateway=gateway),
         consume_search(js, ch_search, stop),
     )
 

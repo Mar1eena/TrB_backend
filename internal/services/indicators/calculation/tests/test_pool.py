@@ -44,7 +44,7 @@ async def test_consume_forever_processes_batch_concurrently() -> None:
     pool = ClientPool(clients)
     seen: list[object] = []
 
-    def slow(client, data):  # noqa: ANN001
+    def slow(client, data, status_cb=None):  # noqa: ANN001
         seen.append(client)
         return []
 

@@ -72,3 +72,46 @@ def test_precomputed_indicator_line_used():
     # здесь просто проверяем, что прогон отработал и дал сделки по osc-сигналу
     out = _run()
     assert out["metrics"]["trades_count"] >= 2
+
+
+def test_extract_indicator_series_aligned_to_bars():
+    n = 200
+    idx = pd.date_range("2023-01-01", periods=n, freq="D", tz="UTC")
+    t = np.arange(n)
+    close = 100 + 10 * np.sin(t / 12.0) + t * 0.03
+    df = pd.DataFrame(
+        {"open": close, "high": close + 1, "low": close - 1, "close": close, "volume": np.full(n, 1e3)},
+        index=idx,
+    )
+    spec = spec_pb2.StrategySpec()
+    rsi = spec.indicators.add()
+    rsi.id = "rsi"
+    rsi.settings.rsi.period = 14
+    sma = spec.indicators.add()
+    sma.id = "sma"
+    sma.settings.sma.period = 20
+    spec.entry_long.compare.left.indicator_id = "rsi"
+    spec.entry_long.compare.op = spec_pb2.COMPARE_OP_LT
+    spec.entry_long.compare.right.constant = 35
+    spec.sizing.percent_equity = 0.9
+    spec.warmup_bars = 25
+
+    c = bt.Cerebro(stdstats=False, runonce=True)
+    c.adddata(bt.feeds.PandasData(dataname=df))
+    c.broker.setcash(100000)
+    c.addstrategy(build_strategy_class(spec, long_only=True))
+    an.attach(c)
+    strat = c.run()[0]
+
+    series = {s["indicator_id"]: s for s in an.extract_indicator_series(strat, spec, df)}
+    assert set(series) == {"rsi", "sma"}
+    assert series["rsi"]["overlay"] is False
+    assert series["sma"]["overlay"] is True
+    # RSI ограничен 0..100, точки выровнены по времени баров
+    rsi_pts = series["rsi"]["points"]
+    assert 100 < len(rsi_pts) <= n
+    assert all(0.0 <= v <= 100.0 for _, v in rsi_pts)
+    assert all(ts in set(idx.to_pydatetime()) for ts, _ in rsi_pts)
+    # SMA примерно в диапазоне цены
+    sma_vals = [v for _, v in series["sma"]["points"]]
+    assert min(close) - 5 < min(sma_vals) and max(sma_vals) < max(close) + 5

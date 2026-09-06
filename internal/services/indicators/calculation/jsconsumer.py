@@ -7,7 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
 import metrics
-from worker import TaskError, process_payload
+from worker import StatusCb, TaskError, process_payload
 
 if TYPE_CHECKING:
     from clickhouse_connect.driver.client import Client
@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 DEFAULT_STREAM = "indicators_task"
 DEFAULT_SUBJECT = "TrB.indicators.tasks"
 DEFAULT_CONSUMER = "indicators_calculation"
+STATUS_SUBJECT_PREFIX = "TrB.indicators.status."
 FETCH_BATCH = 1
 FETCH_TIMEOUT_SEC = 5.0
 NAK_DELAY_SEC = 5.0
@@ -68,11 +69,17 @@ async def bind_pull(js: JetStreamContext, stream: str, durable: str) -> PullSubs
     return await js.pull_subscribe_bind(consumer=durable, stream=stream)
 
 
-async def handle_msg(msg: Ackable, client: Client, *, nak_delay: float = NAK_DELAY_SEC) -> None:
+async def handle_msg(
+    msg: Ackable,
+    client: Client,
+    *,
+    nak_delay: float = NAK_DELAY_SEC,
+    status_cb: StatusCb | None = None,
+) -> None:
     """ACK только после успешной обработки. Битый payload тоже ACK, чтобы не крутить poison."""
     metrics.METRICS.inc("messages_total")
     try:
-        await asyncio.to_thread(process_payload, client, msg.data)
+        await asyncio.to_thread(process_payload, client, msg.data, status_cb)
     except TaskError as exc:
         log.warning("задание отклонено: %s", exc)
         metrics.METRICS.inc("messages_rejected_total")
@@ -100,6 +107,7 @@ async def consume_forever(
     batch: int | None = None,
     timeout: float = FETCH_TIMEOUT_SEC,
     nak_delay: float = NAK_DELAY_SEC,
+    status_cb: StatusCb | None = None,
 ) -> None:
     if not isinstance(pool, ClientPool):
         pool = ClientPool([pool])
@@ -121,14 +129,36 @@ async def consume_forever(
         tasks: list[asyncio.Task[None]] = []
         for msg in msgs:
             client = await pool.acquire()
-            tasks.append(asyncio.create_task(_process_one(msg, client, pool, nak_delay)))
+            tasks.append(
+                asyncio.create_task(_process_one(msg, client, pool, nak_delay, status_cb))
+            )
         if tasks:
             await asyncio.gather(*tasks)
         metrics.METRICS.set_gauge("free_clients", pool.free)
 
 
-async def _process_one(msg: Ackable, client: Client, pool: ClientPool, nak_delay: float) -> None:
+async def _process_one(
+    msg: Ackable,
+    client: Client,
+    pool: ClientPool,
+    nak_delay: float,
+    status_cb: StatusCb | None = None,
+) -> None:
     try:
-        await handle_msg(msg, client, nak_delay=nak_delay)
+        await handle_msg(msg, client, nak_delay=nak_delay, status_cb=status_cb)
     finally:
         pool.release(client)
+
+
+def make_status_publisher(nc, loop) -> StatusCb:
+    """Sync-обёртка публикации статуса из рабочего потока (asyncio.to_thread)."""
+    import json
+
+    def _publish(param_hash: int, payload: dict) -> None:
+        data = json.dumps({"param_hash": param_hash, **payload}).encode("utf-8")
+        fut = asyncio.run_coroutine_threadsafe(
+            nc.publish(f"{STATUS_SUBJECT_PREFIX}{param_hash}", data), loop
+        )
+        fut.result(timeout=5)
+
+    return _publish

@@ -45,6 +45,24 @@ ENGINE = ReplacingMergeTree(inserted_at)
 ORDER BY (run_id, trade_id)
 SETTINGS index_granularity = 8192;
 
+-- Ряды индикаторов, использованных стратегией в прогоне (по выбранному output_key).
+-- Одна строка = (индикатор, выход, бар). Движок перезаписывает через
+-- ALTER TABLE ... DELETE WHERE run_id = ... перед записью нового прогона.
+CREATE TABLE IF NOT EXISTS TrB_strategy.indicator_series
+(
+    run_id UUID,
+    indicator_id LowCardinality(String),
+    indicator LowCardinality(String),
+    output_key LowCardinality(String),
+    overlay UInt8,
+    time DateTime64(3) CODEC(DoubleDelta, ZSTD(1)),
+    value Float64 CODEC(ZSTD(1)),
+    inserted_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+ORDER BY (run_id, indicator_id, output_key, time)
+SETTINGS index_granularity = 8192;
+
 -- Каждая оценка кандидата в ходе поиска (сходимость/скаттер). Дёшево, TTL 90 дней.
 CREATE TABLE IF NOT EXISTS TrB_strategy.search_evals
 (

@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	trb_nats "github.com/Mar1eena/TrB_V3/internal/pkg/brokers/nats"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/env"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
@@ -27,12 +28,18 @@ func App() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var ch driver.Conn
+	var (
+		ch driver.Conn
+		js *trb_nats.Nats
+	)
 	defer func() {
 		if ch != nil {
 			if err := ch.Close(); err != nil {
 				l.Error().Err(err).Msg("ошибка закрытия соединения с ClickHouse")
 			}
+		}
+		if js != nil && js.C != nil {
+			_ = js.C.Drain()
 		}
 	}()
 
@@ -42,6 +49,13 @@ func App() {
 	if err != nil {
 		l.Info().Err(err).Msg("сервис остановлен до подключения к зависимостям")
 		return
+	}
+
+	// NATS — best-effort: без него сервис отдаёт хэш, но не ставит задачу расчёта.
+	if nc, nerr := trb_nats.NewNatsClient(ctx, trb_nats.Nats_config(), l); nerr != nil {
+		l.Warn().Err(nerr).Msg("NATS недоступен — задачи расчёта индикаторов не будут ставиться автоматически")
+	} else {
+		js = nc
 	}
 
 	port := env.First("INDICATORS_PORT", "PORT")
@@ -56,7 +70,7 @@ func App() {
 	l.Info().Str("addr", addr).Msg("indicators-manage (Indicator_Settings) слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
-	server.Register(gs, ch, l)
+	server.Register(gs, ch, js, l)
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {

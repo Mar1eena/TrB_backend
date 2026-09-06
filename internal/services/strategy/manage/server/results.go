@@ -46,7 +46,64 @@ func (s *Server) GetBacktestResult(ctx context.Context, req *strategypb.GetBackt
 		}
 		resp.Trades = trades
 	}
+	if req.GetIncludeIndicators() {
+		series, err := s.readIndicatorSeries(ctx, req.GetRunId())
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		resp.Indicators = series
+	}
 	return resp, nil
+}
+
+func (s *Server) readIndicatorSeries(ctx context.Context, runID string) ([]*strategypb.BacktestIndicatorSeries, error) {
+	rows, err := s.ch.Query(ctx, `
+		SELECT indicator_id, indicator, output_key, overlay, time, value
+		FROM TrB_strategy.indicator_series FINAL
+		WHERE run_id = ?
+		ORDER BY indicator_id, output_key, time`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byKey := make(map[string]*strategypb.BacktestIndicatorSeries)
+	var order []string
+	for rows.Next() {
+		var (
+			indID, indicator, outputKey string
+			overlay                     uint8
+			t                           time.Time
+			value                       float64
+		)
+		if err := rows.Scan(&indID, &indicator, &outputKey, &overlay, &t, &value); err != nil {
+			return nil, err
+		}
+		key := indID + "\x00" + outputKey
+		ser := byKey[key]
+		if ser == nil {
+			ser = &strategypb.BacktestIndicatorSeries{
+				IndicatorId: indID,
+				Indicator:   indicator,
+				OutputKey:   outputKey,
+				Overlay:     overlay == 1,
+			}
+			byKey[key] = ser
+			order = append(order, key)
+		}
+		ser.Points = append(ser.Points, &strategypb.BacktestIndicatorPoint{
+			Time:   timestamppb.New(t),
+			Values: map[string]float64{"value": value},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]*strategypb.BacktestIndicatorSeries, 0, len(order))
+	for _, k := range order {
+		out = append(out, byKey[k])
+	}
+	return out, nil
 }
 
 func (s *Server) readEquity(ctx context.Context, runID string, maxPoints int) ([]*strategypb.EquityPoint, error) {

@@ -170,6 +170,7 @@ services:
       - "9093:9093"
     depends_on:
       - clickhouse-db
+      - nats-server
     deploy:
       resources:
         limits:
@@ -277,6 +278,8 @@ services:
       - STRATEGY_ENGINE_VERSION
       - STRATEGY_INDICATOR_SOURCE
       - STRATEGY_INDICATOR_WAIT_SEC
+      - STRATEGY_BACKTEST_CONCURRENCY
+      - INDICATORS_MANAGE_ADDR=indicators-manage:9093
       - NATS_URL
       - NATS_URL_DOCKER
       - CLICKHOUSE_URL
@@ -300,6 +303,7 @@ services:
       - clickhouse-db
       - postgre-db
       - nats-server
+      - indicators-manage
     deploy:
       resources:
         limits:

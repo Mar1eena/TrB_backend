@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	trb_nats "github.com/Mar1eena/TrB_V3/internal/pkg/brokers/nats"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/services/indicators/manage/pkg"
 	indpb "github.com/Mar1eena/trb_proto/gen/go/indicators"
@@ -15,15 +16,16 @@ import (
 type Server struct {
 	indpb.UnimplementedIndicator_SettingsServer
 	ch  driver.Conn
+	js  *trb_nats.Nats // может быть nil — тогда задача расчёта не ставится автоматически
 	log zlog.Logger
 }
 
-func New(ch driver.Conn, log zlog.Logger) *Server {
-	return &Server{ch: ch, log: log}
+func New(ch driver.Conn, js *trb_nats.Nats, log zlog.Logger) *Server {
+	return &Server{ch: ch, js: js, log: log}
 }
 
-func Register(gs *grpc.Server, ch driver.Conn, log zlog.Logger) {
-	indpb.RegisterIndicator_SettingsServer(gs, New(ch, log))
+func Register(gs *grpc.Server, ch driver.Conn, js *trb_nats.Nats, log zlog.Logger) {
+	indpb.RegisterIndicator_SettingsServer(gs, New(ch, js, log))
 }
 
 func (s *Server) GetSettingsHash(ctx context.Context, req *indpb.Settings) (*indpb.SettingsHash, error) {
@@ -42,6 +44,11 @@ func (s *Server) UpdateSettings(ctx context.Context, req *indpb.Settings) (*indp
 	if err := pkg.UpsertRequest(ctx, s.ch, digest, payload); err != nil {
 		s.log.Error().Err(err).Uint64("param_hash", digest).Msg("UpdateSettings: ошибка записи")
 		return nil, status.Error(codes.Internal, err.Error())
+	}
+	// Заказ расчёта в calculation. Не критично для ответа: если NATS недоступен,
+	// потребитель (движок стратегий) всё равно получит хэш и посчитает индикатор сам.
+	if err := pkg.PublishCalcTask(s.js, digest); err != nil {
+		s.log.Warn().Err(err).Uint64("param_hash", digest).Msg("UpdateSettings: задача расчёта не поставлена")
 	}
 	return &indpb.UpdateSettingsResponse{Hash: digest, Update: true}, nil
 }

@@ -41,7 +41,7 @@ async def bind(js: JetStreamContext, durable: str):
     return await js.pull_subscribe_bind(consumer=durable, stream=STREAM)
 
 
-async def consume_backtest(js, ch_client: Client, stop: asyncio.Event, *, publish=None, nak_delay: float = NAK_DELAY_SEC) -> None:
+async def consume_backtest(js, ch_client: Client, stop: asyncio.Event, *, gateway=None, nak_delay: float = NAK_DELAY_SEC) -> None:
     psub = await bind(js, CONSUMER_BACKTEST)
     concurrency = _backtest_concurrency()
     log.info("backtest консьюмер привязан (%s/%s), параллельно до %d", STREAM, CONSUMER_BACKTEST, concurrency)
@@ -60,7 +60,7 @@ async def consume_backtest(js, ch_client: Client, stop: asyncio.Event, *, publis
         pool.put_nowait(c)
 
     try:
-        await _loop(psub, stop, lambda ch, data: _handle_backtest(ch, data, publish), pool, nak_delay, len(clients))
+        await _loop(psub, stop, lambda ch, data: _handle_backtest(ch, data, gateway), pool, nak_delay, len(clients))
     finally:
         for c in clients:
             if c is ch_client:
@@ -145,13 +145,13 @@ async def _heartbeat(msg) -> None:
         pass
 
 
-def _handle_backtest(ch_client: Client, data: bytes, publish=None) -> None:
+def _handle_backtest(ch_client: Client, data: bytes, gateway=None) -> None:
     task = backtest_pb2.BacktestTask()
     task.ParseFromString(data)
     if not task.run_id:
         log.warning("BacktestTask без run_id")
         return
-    run_backtest(ch_client, task.run_id, publish=publish)
+    run_backtest(ch_client, task.run_id, gateway=gateway)
 
 
 def _handle_search(ch_client: Client, data: bytes) -> None:

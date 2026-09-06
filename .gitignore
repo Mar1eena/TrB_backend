@@ -5,3 +5,6 @@ volumes
 historical_candle
 backups
 configs/envoy/protos/trb_protos.pb
+# Local multi-module dev (TrB_proto side by side); not for CI/docker
+go.work
+go.work.sum

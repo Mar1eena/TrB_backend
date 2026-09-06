@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from indicators import indicators_pb2 as pb
 
@@ -36,6 +36,20 @@ class TaskError(Exception):
     """Некорректное задание из NATS."""
 
 
+# Статус расчёта по хэшу: движок стратегий подписывается на
+# TrB.indicators.status.<param_hash> и ждёт "done"/"error" вместо опроса ClickHouse.
+StatusCb = Callable[[int, dict[str, Any]], None]
+
+
+def _emit(status_cb: StatusCb | None, param_hash: int, payload: dict[str, Any]) -> None:
+    if status_cb is None:
+        return
+    try:
+        status_cb(param_hash, payload)
+    except Exception:  # noqa: BLE001 — статус не критичен для расчёта
+        log.warning("не удалось опубликовать статус param_hash=%s", param_hash, exc_info=True)
+
+
 def _warmup_margin() -> int:
     raw = env_get("INDICATORS_WARMUP_MARGIN_BARS")
     if not raw:
@@ -46,7 +60,9 @@ def _warmup_margin() -> int:
         return _DEFAULT_WARMUP_MARGIN
 
 
-def process_payload(client: Client, payload: bytes) -> list[pb.Settings]:
+def process_payload(
+    client: Client, payload: bytes, status_cb: StatusCb | None = None
+) -> list[pb.Settings]:
     """Разбирает JSONEachRow, считает индикатор по HCT и пишет в indicator_values."""
     try:
         rows = parse_json_each_row(payload)
@@ -58,13 +74,15 @@ def process_payload(client: Client, payload: bytes) -> list[pb.Settings]:
 
     out: list[pb.Settings] = []
     for row in rows:
-        settings = process_row(client, row)
+        settings = process_row(client, row, status_cb)
         if settings is not None:
             out.append(settings)
     return out
 
 
-def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
+def process_row(
+    client: Client, row: dict[str, Any], status_cb: StatusCb | None = None
+) -> pb.Settings | None:
     if "param_hash" not in row:
         log.warning("в строке JSONEachRow нет param_hash: %s", list(row.keys()))
         metrics.record_outcome(metrics.OUTCOME_BAD_ROW)
@@ -80,6 +98,7 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
     if raw is None:
         log.warning("нет assignment для param_hash=%s", param_hash)
         metrics.record_outcome(metrics.OUTCOME_NO_ASSIGNMENT)
+        _emit(status_cb, param_hash, {"status": "error", "error": "no_assignment"})
         return None
 
     try:
@@ -87,6 +106,7 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
     except SettingsCodecError as exc:
         log.warning("param_hash=%s: %s", param_hash, exc)
         metrics.record_outcome(metrics.OUTCOME_DECODE_ERROR)
+        _emit(status_cb, param_hash, {"status": "error", "error": "decode"})
         return None
 
     indicator = indicator_type_name(settings)
@@ -108,6 +128,7 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
             max_time,
         )
         metrics.record_outcome(metrics.OUTCOME_UP_TO_DATE)
+        _emit(status_cb, param_hash, {"status": "done", "up_to_date": True})
         return None
 
     tail_bars = _tail_bars(settings, max_time)
@@ -117,10 +138,12 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
     except ValueError as exc:
         log.warning("param_hash=%s: выборка HCT: %s", param_hash, exc)
         metrics.record_outcome(metrics.OUTCOME_NO_CANDLES)
+        _emit(status_cb, param_hash, {"status": "error", "error": "hct_query"})
         return None
     if len(candles) == 0:
         log.warning("param_hash=%s: нет свечей в TrB.hct", param_hash)
         metrics.record_outcome(metrics.OUTCOME_NO_CANDLES)
+        _emit(status_cb, param_hash, {"status": "error", "error": "no_candles"})
         return None
 
     try:
@@ -137,6 +160,7 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
             else metrics.OUTCOME_COMPUTE_ERROR
         )
         metrics.record_outcome(outcome)
+        _emit(status_cb, param_hash, {"status": "error", "error": "compute"})
         return None
 
     written = values.insert_values(
@@ -157,6 +181,7 @@ def process_row(client: Client, row: dict[str, Any]) -> pb.Settings | None:
     )
     metrics.record_outcome(metrics.OUTCOME_COMPUTED)
     metrics.record_points_written(written)
+    _emit(status_cb, param_hash, {"status": "done", "written": int(written)})
     return settings
 
 

@@ -1,4 +1,4 @@
-"""Анализаторы backtrader -> метрики + кривая капитала + сделки."""
+"""Анализаторы backtrader -> метрики + кривая капитала + сделки + ряды индикаторов."""
 
 from __future__ import annotations
 
@@ -7,6 +7,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 import backtrader as bt
+
+from . import indicators as ind_mod
+
+# Overlap Studies рисуются поверх цены, остальные — отдельной панелью.
+_OVERLAY_INDICATORS = frozenset({
+    "sma", "ema", "wma", "dema", "tema", "trima", "kama", "t3", "ma", "mama",
+    "bbands", "sar", "sarext", "midpoint", "midprice", "ht_trendline", "mavp",
+})
 
 
 class EquityRecorder(bt.Analyzer):
@@ -159,6 +167,40 @@ def extract(strat: bt.Strategy, initial_cash: float) -> dict[str, Any]:
         "expectancy": float(avg_trade),
     }
     return {"metrics": metrics, "equity": eq, "trades": trades}
+
+
+def extract_indicator_series(strat: bt.Strategy, spec, df) -> list[dict[str, Any]]:
+    """Значения индикаторов стратегии по барам df — для графика в результате бэктеста."""
+    ind_map = getattr(strat, "_ind", {}) or {}
+    idx = list(df.index)
+    out: list[dict[str, Any]] = []
+    for ref in spec.indicators:
+        line = ind_map.get(ref.id)
+        if line is None:
+            continue
+        try:
+            arr = list(line.array)
+        except Exception:  # noqa: BLE001
+            continue
+        name = (ind_mod.indicator_type_name(ref.settings) or "").lower()
+        points: list[tuple[datetime, float]] = []
+        for i in range(min(len(arr), len(idx))):
+            v = arr[i]
+            if v is None:
+                continue
+            fv = float(v)
+            if not math.isfinite(fv):
+                continue
+            points.append((idx[i].to_pydatetime(), fv))
+        if points:
+            out.append({
+                "indicator_id": ref.id,
+                "indicator": name,
+                "output_key": ref.output_key or "",
+                "overlay": name in _OVERLAY_INDICATORS,
+                "points": points,
+            })
+    return out
 
 
 def _sortino(series: list[float]) -> float:

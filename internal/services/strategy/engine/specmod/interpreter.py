@@ -150,6 +150,13 @@ class _ArrayLine(bt.Indicator):
         arr = self.p.arr
         self.lines.v[0] = float(arr[i]) if arr is not None and 0 <= i < len(arr) else float("nan")
 
+    def once(self, start: int, end: int) -> None:
+        arr = self.p.arr
+        dst = self.lines.v.array
+        n = len(arr) if arr is not None else 0
+        for i in range(start, end):
+            dst[i] = float(arr[i]) if i < n else float("nan")
+
 
 def build_strategy_class(spec: spec_pb2.StrategySpec, *, long_only: bool, precomputed: dict | None = None):
     compiler = _Compiler()

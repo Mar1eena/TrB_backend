@@ -59,6 +59,20 @@ var strategyDDL = []string{
 	ORDER BY (search_run_id, evaluated_at)
 	TTL toDateTime(evaluated_at) + toIntervalDay(90)
 	SETTINGS index_granularity = 8192`,
+	`CREATE TABLE IF NOT EXISTS TrB_strategy.indicator_series
+	(
+	    run_id UUID,
+	    indicator_id LowCardinality(String),
+	    indicator LowCardinality(String),
+	    output_key LowCardinality(String),
+	    overlay UInt8,
+	    time DateTime64(3) CODEC(DoubleDelta, ZSTD(1)),
+	    value Float64 CODEC(ZSTD(1)),
+	    inserted_at DateTime64(3) DEFAULT now64(3)
+	)
+	ENGINE = ReplacingMergeTree(inserted_at)
+	ORDER BY (run_id, indicator_id, output_key, time)
+	SETTINGS index_granularity = 8192`,
 }
 
 // EnsureStrategySchema создаёт БД/таблицы TrB_strategy, если их ещё нет.

@@ -27,6 +27,7 @@ from jsconsumer import (
     ClientPool,
     bind_pull,
     consume_forever,
+    make_status_publisher,
 )
 
 log = logging.getLogger(__name__)
@@ -116,6 +117,8 @@ async def _run() -> None:
         except NotImplementedError:
             signal.signal(sig, lambda *_: stop.set())
 
+    status_cb = make_status_publisher(nc, loop)
+
     await consume_forever(
         psub,
         pool,
@@ -123,6 +126,7 @@ async def _run() -> None:
         batch=fetch_batch,
         timeout=fetch_timeout,
         nak_delay=nak_delay,
+        status_cb=status_cb,
     )
     await nc.drain()
     pool.close_all()

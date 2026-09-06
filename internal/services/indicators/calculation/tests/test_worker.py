@@ -88,6 +88,30 @@ def test_missing_assignment() -> None:
     client.insert.assert_not_called()
 
 
+def test_status_cb_done_on_success() -> None:
+    settings = _rsi()
+    raw = encode_request(settings)
+    client = MagicMock()
+    assign = MagicMock()
+    assign.result_rows = [[raw.hex()]]
+    candles = MagicMock()
+    candles.result_rows = _hct_rows(40)
+    client.query.side_effect = [assign, _agg(), candles]
+
+    seen: list[tuple[int, dict]] = []
+    process_payload(client, b'{"param_hash":1}\n', lambda h, p: seen.append((h, p)))
+    assert seen and seen[-1][0] == 1
+    assert seen[-1][1]["status"] == "done"
+
+
+def test_status_cb_error_on_missing_assignment() -> None:
+    client = MagicMock()
+    client.query.return_value.result_rows = []
+    seen: list[tuple[int, dict]] = []
+    process_payload(client, b'{"param_hash":7}\n', lambda h, p: seen.append((h, p)))
+    assert seen == [(7, {"status": "error", "error": "no_assignment"})]
+
+
 def test_skips_when_end_not_after_max_time() -> None:
     settings = _rsi()
     raw = encode_request(settings)
