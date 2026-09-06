@@ -50,8 +50,14 @@ async def _run() -> None:
     js = nc.jetstream()
     log.info("strategy-engine подключён к NATS %s", nats_url)
 
-    stop = asyncio.Event()
     loop = asyncio.get_running_loop()
+
+    def publish(subject: str, payload: bytes) -> None:
+        """Синхронная публикация из рабочего потока (заказ расчёта индикаторов)."""
+        fut = asyncio.run_coroutine_threadsafe(nc.publish(subject, payload), loop)
+        fut.result(timeout=10)
+
+    stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop.set)
@@ -59,7 +65,7 @@ async def _run() -> None:
             signal.signal(sig, lambda *_: stop.set())
 
     await asyncio.gather(
-        consume_backtest(js, ch_backtest, stop),
+        consume_backtest(js, ch_backtest, stop, publish=publish),
         consume_search(js, ch_search, stop),
     )
 

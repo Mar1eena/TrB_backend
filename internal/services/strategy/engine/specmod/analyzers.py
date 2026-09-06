@@ -37,37 +37,70 @@ class EquityRecorder(bt.Analyzer):
 
 
 class TradeRecorder(bt.Analyzer):
+    """Пары входных/выходных исполнений -> записи о сделках.
+
+    Цены входа/выхода берём из фактических исполнений ордеров (notify_order),
+    а не восстанавливаем из PnL. PnL и число баров — из backtrader Trade.
+    """
+
     def start(self) -> None:
         self.trades: list[dict[str, Any]] = []
         self._seq = 0
+        self._last_fill: dict[str, Any] | None = None
+        self._cur: dict[str, Any] | None = None
+
+    def notify_order(self, order) -> None:
+        if order.status != order.Completed:
+            return
+        ex = order.executed
+        dt = self.strategy.datas[0].datetime.datetime(0)
+        self._last_fill = {
+            "price": float(ex.price),
+            "size": float(ex.size),  # знаковый: + покупка, − продажа
+            "dt": dt,
+        }
 
     def notify_trade(self, trade: bt.Trade) -> None:
-        if not trade.isclosed:
+        if getattr(trade, "justopened", False):
+            self._cur = {
+                "entry_price": float(trade.price),
+                "entry_dt": bt.num2date(trade.dtopen),
+                "size": abs(float(trade.size)),
+                "is_long": trade.size > 0,
+            }
             return
+        if not trade.isclosed or self._cur is None:
+            return
+
+        cur = self._cur
+        fill = self._last_fill or {}
+        exit_price = float(fill.get("price", trade.price))
+        size = cur["size"] or abs(float(fill.get("size", 0.0)))
+        entry_price = cur["entry_price"]
+        entry_value = entry_price * size
+        exit_value = exit_price * size
+        pnl = float(trade.pnlcomm)
+
         self._seq += 1
-        entry_dt = bt.num2date(trade.dtopen)
-        exit_dt = bt.num2date(trade.dtclose)
-        entry_price = trade.price
-        pnl = trade.pnlcomm
-        size = abs(trade.size) if trade.size else trade.history[0].event.size if trade.history else 0.0
-        value = abs(entry_price * (size or 1.0))
-        exit_price = entry_price + (pnl / size) if size else entry_price
         self.trades.append({
             "trade_id": self._seq,
-            "is_long": 1 if (trade.long if hasattr(trade, "long") else size > 0) else 0,
-            "entry_time": _utc(entry_dt),
-            "entry_price": float(entry_price),
-            "exit_time": _utc(exit_dt),
-            "exit_price": float(exit_price),
-            "size": float(size or 0.0),
-            "pnl": float(pnl),
-            "pnl_pct": float(pnl / value) if value else 0.0,
+            "is_long": 1 if cur["is_long"] else 0,
+            "entry_time": _utc(cur["entry_dt"]),
+            "entry_price": entry_price,
+            "exit_time": _utc(bt.num2date(trade.dtclose)),
+            "exit_price": exit_price,
+            "size": float(size),
+            "pnl": pnl,
+            "pnl_pct": (pnl / entry_value) if entry_value else 0.0,
             "bars_held": int(trade.barlen),
             "mae": 0.0,
             "mfe": 0.0,
             "entry_reason": "",
             "exit_reason": "",
+            "_entry_value": entry_value,
+            "_exit_value": exit_value,
         })
+        self._cur = None
 
     def get_analysis(self) -> dict:
         return {"trades": self.trades}

@@ -31,10 +31,10 @@ async def bind(js: JetStreamContext, durable: str):
     return await js.pull_subscribe_bind(consumer=durable, stream=STREAM)
 
 
-async def consume_backtest(js, ch_client: Client, stop: asyncio.Event, *, nak_delay: float = NAK_DELAY_SEC) -> None:
+async def consume_backtest(js, ch_client: Client, stop: asyncio.Event, *, publish=None, nak_delay: float = NAK_DELAY_SEC) -> None:
     psub = await bind(js, CONSUMER_BACKTEST)
     log.info("backtest консьюмер привязан (%s/%s)", STREAM, CONSUMER_BACKTEST)
-    await _loop(psub, stop, _handle_backtest, ch_client, nak_delay)
+    await _loop(psub, stop, lambda ch, data: _handle_backtest(ch, data, publish), ch_client, nak_delay)
 
 
 async def consume_search(js, ch_client: Client, stop: asyncio.Event, *, nak_delay: float = NAK_DELAY_SEC) -> None:
@@ -88,13 +88,13 @@ async def _heartbeat(msg) -> None:
         pass
 
 
-def _handle_backtest(ch_client: Client, data: bytes) -> None:
+def _handle_backtest(ch_client: Client, data: bytes, publish=None) -> None:
     task = backtest_pb2.BacktestTask()
     task.ParseFromString(data)
     if not task.run_id:
         log.warning("BacktestTask без run_id")
         return
-    run_backtest(ch_client, task.run_id)
+    run_backtest(ch_client, task.run_id, publish=publish)
 
 
 def _handle_search(ch_client: Client, data: bytes) -> None:

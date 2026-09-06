@@ -90,6 +90,8 @@ STRATEGY_PORT=9094
 STRATEGY_METRICS_ADDR=:9106         # HTTP /metrics,/healthz,/readyz движка
 STRATEGY_PG_POOL=4                  # размер psycopg-пула движка
 STRATEGY_ENGINE_VERSION=            # переопределение метки версии движка (пусто => авто bt+talib)
+STRATEGY_INDICATOR_SOURCE=clickhouse # clickhouse — заказать расчёт в calculation и читать из CH; talib — считать в движке
+STRATEGY_INDICATOR_WAIT_SEC=180     # сколько ждать появления значений индикатора в CH до фолбэка на talib
 
 #Historic candle service
 INTERVAL_UPDATE_HC = 30 # интервал обновления свечей в секундах

@@ -4,18 +4,35 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 from typing import Any
 
 import backtrader as bt
+import numpy as np
 import pandas as pd
 
+import envutil
 import hct
 import pg
 from specmod import analyzers as an
+from specmod import ch_indicators
+from specmod import indicators as ind_mod
 from specmod import load as specload
 from specmod.interpreter import build_strategy_class
 
 log = logging.getLogger(__name__)
+
+
+def _indicator_source() -> str:
+    return (envutil.get("STRATEGY_INDICATOR_SOURCE") or "clickhouse").strip().lower()
+
+
+def _indicator_wait_sec() -> float:
+    raw = envutil.get("STRATEGY_INDICATOR_WAIT_SEC")
+    try:
+        return float(raw) if raw else 180.0
+    except ValueError:
+        return 180.0
 
 
 def _default_version() -> str:
@@ -25,7 +42,7 @@ def _default_version() -> str:
         tav = talib.__version__
     except Exception:  # noqa: BLE001
         tav = "?"
-    return f"bt{bt.__version__}+talib{tav}+engine1"
+    return f"bt{bt.__version__}+talib{tav}+engine2"
 
 
 ENGINE_VERSION = os.environ.get("STRATEGY_ENGINE_VERSION") or _default_version()
@@ -35,8 +52,12 @@ class BacktestError(Exception):
     """Транзиентная ошибка (CH/PG недоступны) — NAK с ретраем."""
 
 
-def run_backtest_inproc(spec, df: pd.DataFrame, config) -> dict[str, Any]:
-    """Чистый прогон: без PG/CH/NATS. Возвращает {'metrics','equity','trades'}."""
+def run_backtest_inproc(spec, df: pd.DataFrame, config, precomputed: dict | None = None) -> dict[str, Any]:
+    """Чистый прогон: без PG/CH/NATS. Возвращает {'metrics','equity','trades'}.
+
+    precomputed: {IndicatorRef.id: np.ndarray выровненный по барам df} — значения
+    индикаторов из общего пайплайна (ClickHouse). Отсутствующие считаются в движке.
+    """
     if df.empty:
         raise specload.SpecError("нет свечей в диапазоне")
     if len(df) <= max(int(spec.warmup_bars), 0) + 2:
@@ -53,7 +74,7 @@ def run_backtest_inproc(spec, df: pd.DataFrame, config) -> dict[str, Any]:
         cerebro.broker.set_slippage_perc(perc=config.slippage_pct)
     cerebro.broker.set_coc(False)
 
-    strat_cls = build_strategy_class(spec, long_only=config.long_only)
+    strat_cls = build_strategy_class(spec, long_only=config.long_only, precomputed=precomputed)
     cerebro.addstrategy(strat_cls)
     an.attach(cerebro)
 
@@ -62,7 +83,54 @@ def run_backtest_inproc(spec, df: pd.DataFrame, config) -> dict[str, Any]:
     return an.extract(strat, cash)
 
 
-def run_backtest(ch_client, task_run_id: str) -> None:
+def resolve_indicator_lines(
+    ch_client,
+    publish,
+    spec,
+    df: pd.DataFrame,
+    uid: str,
+    interval: int,
+    start: datetime,
+    end: datetime,
+) -> dict[str, np.ndarray]:
+    """Заказывает расчёт индикаторов в calculation и читает готовые ряды из ClickHouse.
+
+    Индикаторы, которые не удалось получить (таймаут/ошибка), опускаются —
+    интерпретатор посчитает их в движке через bt.talib.
+    """
+    if _indicator_source() != "clickhouse" or publish is None:
+        return {}
+
+    candle_times = [ts.to_pydatetime() for ts in df.index]
+    wait_sec = _indicator_wait_sec()
+    out: dict[str, np.ndarray] = {}
+    for ref in spec.indicators:
+        name = ind_mod.indicator_type_name(ref.settings)
+        if not name:
+            continue
+        try:
+            h = ch_indicators.request_indicator(
+                ch_client, publish, uid=uid, interval=interval,
+                indicator_settings=ref.settings, start=start, end=end,
+            )
+            ch_indicators.wait_for_coverage(ch_client, h, start, end, timeout_sec=wait_sec)
+            keys = ch_indicators.output_keys_for(name)
+            series = ch_indicators.load_series(
+                ch_client, h, ref.output_key, keys, candle_times, start, end,
+            )
+            if np.isfinite(series).any():
+                out[ref.id] = series
+                log.info("индикатор %s (%s) взят из ClickHouse, hash=%s", ref.id, name, h)
+            else:
+                log.warning("индикатор %s: в ClickHouse пусто — движок посчитает сам", ref.id)
+        except ch_indicators.IndicatorTimeout as exc:
+            log.warning("индикатор %s: %s — движок посчитает сам", ref.id, exc)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("индикатор %s: ошибка запроса (%s) — движок посчитает сам", ref.id, exc)
+    return out
+
+
+def run_backtest(ch_client, task_run_id: str, publish=None) -> None:
     row = pg.fetch_backtest_run(task_run_id)
     if row is None:
         log.warning("нет backtest_run id=%s", task_run_id)
@@ -86,8 +154,13 @@ def run_backtest(ch_client, task_run_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         raise BacktestError(f"выборка свечей: {exc}") from exc
 
+    precomputed = resolve_indicator_lines(
+        ch_client, publish, spec, df, row["uid"], int(row["interval"]),
+        row["period_start"], row["period_end"],
+    )
+
     try:
-        result = run_backtest_inproc(spec, df, config)
+        result = run_backtest_inproc(spec, df, config, precomputed=precomputed)
     except specload.SpecError as exc:
         pg.mark_run_status(task_run_id, "failed", error=str(exc), engine_version=ENGINE_VERSION)
         return

@@ -139,8 +139,21 @@ def _safe(fn, a, b) -> bool:
         return False
 
 
-def build_strategy_class(spec: spec_pb2.StrategySpec, *, long_only: bool):
+class _ArrayLine(bt.Indicator):
+    """Отдаёт заранее посчитанный ряд (из ClickHouse), выровненный по барам."""
+
+    lines = ("v",)
+    params = (("arr", None),)
+
+    def next(self) -> None:
+        i = len(self) - 1
+        arr = self.p.arr
+        self.lines.v[0] = float(arr[i]) if arr is not None and 0 <= i < len(arr) else float("nan")
+
+
+def build_strategy_class(spec: spec_pb2.StrategySpec, *, long_only: bool, precomputed: dict | None = None):
     compiler = _Compiler()
+    precomputed = precomputed or {}
 
     entry_long = compiler.compile_bool(spec.entry_long) if spec.HasField("entry_long") else _false
     exit_long = compiler.compile_bool(spec.exit_long) if spec.HasField("exit_long") else _false
@@ -158,7 +171,10 @@ def build_strategy_class(spec: spec_pb2.StrategySpec, *, long_only: bool):
         def __init__(self) -> None:
             self._ind: dict = {}
             for ref in ind_refs:
-                self._ind[ref.id] = ind_mod.build(self, ref)
+                if ref.id in precomputed:
+                    self._ind[ref.id] = _ArrayLine(self.data, arr=precomputed[ref.id]).lines.v
+                else:
+                    self._ind[ref.id] = ind_mod.build(self, ref)
             self._cross = []
             for cmp in cross_specs:
                 a = _operand_line(self, cmp.left)
