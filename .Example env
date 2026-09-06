@@ -85,6 +85,12 @@ INDICATORS_METRICS_ADDR=:9105       # HTTP /metrics,/healthz,/readyz; :0 — в�
 INDICATORS_CH_CONNECT_RETRIES=30   # попыток подключения к ClickHouse на старте (-1 = бесконечно)
 INDICATORS_CH_CONNECT_BACKOFF_SEC=2
 
+#Strategy service (составление стратегий, бэктесты, генетический поиск)
+STRATEGY_PORT=9094
+STRATEGY_METRICS_ADDR=:9106         # HTTP /metrics,/healthz,/readyz движка
+STRATEGY_PG_POOL=4                  # размер psycopg-пула движка
+STRATEGY_ENGINE_VERSION=            # переопределение метки версии движка (пусто => авто bt+talib)
+
 #Historic candle service
 INTERVAL_UPDATE_HC = 30 # интервал обновления свечей в секундах
 

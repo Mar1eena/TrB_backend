@@ -185,6 +185,20 @@ static_resources:
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
+                            prefix: /trb.strategy.v1.StrategyService
+                          route:
+                            cluster: strategy
+                            timeout: 120s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
+                            prefix: /v1/strategy
+                          route:
+                            cluster: strategy
+                            timeout: 120s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
                             prefix: /clickhouse.grpc.ClickHouse
                           route:
                             cluster: clickhouse_grpc
@@ -215,6 +229,7 @@ static_resources:
                         - trb.clickhouse.v1.ClickHouse_Admin
                         - trb.clickhouse.v1.ClickHouse
                         - trb.indicators.v1.Indicator_Settings
+                        - trb.strategy.v1.StrategyService
                       print_options:
                         add_whitespace: true
                         always_print_primitive_fields: true
@@ -364,6 +379,26 @@ static_resources:
                       # хост (VS Code / make indicators) или опубликованный 9093 контейнера
                       address: host.docker.internal
                       port_value: 9093
+    - name: strategy
+      connect_timeout: 2s
+      lb_policy: ROUND_ROBIN
+      dns_lookup_family: V4_ONLY
+      type: STRICT_DNS
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: strategy
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      # хост (VS Code / make strategy-manage) или опубликованный 9094 контейнера
+                      address: host.docker.internal
+                      port_value: 9094
     - name: clickhouse_grpc
       connect_timeout: 0.25s
       lb_policy: ROUND_ROBIN

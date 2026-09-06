@@ -223,6 +223,89 @@ services:
         reservations:
           memory: 128M
 
+  strategy-manage:
+    <<: [*services-config]
+    container_name: trb-strategy-manage
+    image: strategy-manage:latest
+    build:
+      <<: *go-build
+      args:
+        CMD_PATH: ./internal/services/strategy/manage/cmd/main.go
+    environment:
+      - APP_RUNTIME=docker
+      - PORT=9094
+      - STRATEGY_PORT=9094
+      - NATS_URL
+      - NATS_URL_DOCKER
+      - CLICKHOUSE_URL
+      - CLICKHOUSE_URL_DOCKER
+      - CLICKHOUSE_DATABASE
+      - CLICKHOUSE_USER
+      - CLICKHOUSE_USERNAME
+      - CLICKHOUSE_PASSWORD
+      - POSTGRES_URL
+      - POSTGRES_URL_DOCKER
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+    ports:
+      - "9094:9094"
+    depends_on:
+      - clickhouse-db
+      - postgre-db
+      - nats-server
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+        reservations:
+          memory: 64M
+
+  strategy-engine:
+    <<: [*services-config]
+    container_name: trb-strategy-engine
+    image: strategy-engine:latest
+    build:
+      context: .
+      dockerfile: ./build/docker/services/strategy/Dockerfile
+    command: ["python", "/app/main.py"]
+    environment:
+      - APP_RUNTIME=docker
+      - STRATEGY_METRICS_ADDR=:9106
+      - STRATEGY_PG_POOL
+      - STRATEGY_ENGINE_VERSION
+      - NATS_URL
+      - NATS_URL_DOCKER
+      - CLICKHOUSE_URL
+      - CLICKHOUSE_URL_DOCKER
+      - CLICKHOUSE_DATABASE
+      - CLICKHOUSE_USER
+      - CLICKHOUSE_USERNAME
+      - CLICKHOUSE_PASSWORD
+      - POSTGRES_URL
+      - POSTGRES_URL_DOCKER
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9106/healthz').status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - clickhouse-db
+      - postgre-db
+      - nats-server
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 3072M
+        reservations:
+          memory: 256M
+
   clickhouse:
     <<: [*services-config]
     container_name: trb-clickhouse

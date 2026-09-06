@@ -12,9 +12,12 @@ cmd_test = ./internal/services/test/cmd/main.go
 cmd_indicators_manage = ./internal/services/indicators/manage/cmd/main.go
 cmd_indicators_calculation = ./internal/services/indicators/calculation/main.py
 indicators_dockerfile = ./build/docker/services/indicators/Dockerfile
+cmd_strategy_manage = ./internal/services/strategy/manage/cmd/main.go
+cmd_strategy_engine = ./internal/services/strategy/engine/main.py
+strategy_dockerfile = ./build/docker/services/strategy/Dockerfile
 TRB_PROTO_REF ?= main
 
-.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db test services gene invest ver indicators indicators-manage indicators-calculation indicators-docker indicators-manage-docker indicators-calculation-docker
+.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db test services gene invest ver indicators indicators-manage indicators-calculation indicators-docker indicators-manage-docker indicators-calculation-docker strategy strategy-manage strategy-engine strategy-docker strategy-manage-docker strategy-engine-docker
 
 up:
 	docker-compose --project-name=${name} up -d
@@ -72,13 +75,29 @@ indicators-manage-docker:
 indicators-calculation-docker:
 	docker build -f ${indicators_dockerfile} . -t indicators-calculation:latest
 
+strategy: strategy-manage
+
+strategy-manage:
+	go run ${cmd_strategy_manage}
+
+strategy-engine:
+	python ${cmd_strategy_engine}
+
+strategy-docker: strategy-manage-docker strategy-engine-docker
+
+strategy-manage-docker:
+	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_strategy_manage} -t strategy-manage:latest
+
+strategy-engine-docker:
+	docker build -f ${strategy_dockerfile} . -t strategy-engine:latest
+
 ver:
 	go get github.com/Mar1eena/trb_proto@latest
 	go mod tidy
 
 # Сначала обновляет trb_proto, затем собирает все сервисы
 # historicCandleScheduler — пока не реализован (см. README)
-build: gene ver historicCandle invest indicators-docker postgre postgre-1c-db test clickhouse nats envoy
+build: gene ver historicCandle invest indicators-docker strategy-docker postgre postgre-1c-db test clickhouse nats envoy
 
 make upd: build up
 
