@@ -1,6 +1,7 @@
 .env
 .idea   
 .cursor
+.claude
 volumes
 historical_candle
 backups
