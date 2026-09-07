@@ -76,6 +76,32 @@ func NewWithPeers(home *pgxpool.Pool, cfg postgres.Config, log zlog.Logger, peer
 	return root
 }
 
+// AddPeer регистрирует дополнительное соединение уже после старта сервера.
+// Недоступная на момент запуска БД подключается в фоне и появляется здесь позже,
+// не блокируя обслуживание основного соединения.
+func (a *Admin) AddPeer(p Peer) {
+	if p.Name == "" || p.Name == a.name || p.Home == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if existing, ok := a.peers[p.Name]; ok {
+		if existing.home != nil && existing.home != p.Home {
+			p.Home.Close()
+		}
+		return
+	}
+	a.peers[p.Name] = &Admin{
+		name:   p.Name,
+		host:   p.Host,
+		home:   p.Home,
+		homeDB: p.Cfg.Database(),
+		cfg:    p.Cfg,
+		log:    a.log,
+		extra:  make(map[string]*pgxpool.Pool),
+	}
+}
+
 func (a *Admin) active(ctx context.Context) *Admin {
 	if a == nil {
 		return a

@@ -49,8 +49,8 @@ func App() {
 	}
 
 	named := clickhouse.NamedConfigs()
-	extras := make(map[string]driver.Conn)
 	infos := make([]server.ConnInfo, 0, len(named))
+	extraConfigs := make([]clickhouse.NamedConfig, 0, len(named))
 	defaultName := clickhouse.DefaultConnectionName()
 	for _, item := range named {
 		infos = append(infos, server.ConnInfo{
@@ -63,23 +63,8 @@ func App() {
 		if item.Default {
 			continue
 		}
-		conn, err := wait.Until(ctx, l, "ClickHouse:"+item.Name, func(ctx context.Context) (driver.Conn, error) {
-			return clickhouse.Connect(ctx, item.Config)
-		})
-		if err != nil {
-			l.Error().Err(err).Str("name", item.Name).Msg("не удалось подключить дополнительный ClickHouse")
-			continue
-		}
-		extras[item.Name] = conn
-		l.Info().Str("name", item.Name).Str("addr", item.Host).Msg("дополнительный ClickHouse подключён")
+		extraConfigs = append(extraConfigs, item)
 	}
-	defer func() {
-		for name, conn := range extras {
-			if err := conn.Close(); err != nil {
-				l.Error().Err(err).Str("name", name).Msg("ошибка закрытия дополнительного ClickHouse")
-			}
-		}
-	}()
 
 	port := env.Get("PORT")
 	if !env.IsContainer() {
@@ -104,8 +89,26 @@ func App() {
 	l.Info().Str("addr", addr).Msg("clickhouse слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
-	service := server.NewWithExtras(ch, l, extras, defaultName, infos...)
+	service := server.NewWithExtras(ch, l, nil, defaultName, infos...)
 	server.Register(gs, service)
+	defer service.CloseExtras()
+
+	// Дополнительные соединения подключаем в фоне: недоступная на старте БД
+	// не должна мешать обслуживать основное соединение.
+	for _, item := range extraConfigs {
+		item := item
+		go func() {
+			conn, err := wait.Until(ctx, l, "ClickHouse:"+item.Name, func(ctx context.Context) (driver.Conn, error) {
+				return clickhouse.Connect(ctx, item.Config)
+			})
+			if err != nil {
+				l.Error().Err(err).Str("name", item.Name).Msg("не удалось подключить дополнительный ClickHouse")
+				return
+			}
+			service.AddExtra(item.Name, conn)
+			l.Info().Str("name", item.Name).Str("addr", item.Host).Msg("дополнительный ClickHouse подключён")
+		}()
+	}
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {

@@ -104,6 +104,24 @@ func (s *Server) lookup(ctx context.Context) driver.Conn {
 	return s.ch
 }
 
+// AddExtra регистрирует дополнительное соединение уже после старта сервера.
+// Нужно, чтобы недоступная на момент запуска БД не блокировала обслуживание
+// основного соединения — она подключится в фоне и появится здесь позже.
+func (s *Server) AddExtra(name string, conn driver.Conn) {
+	if name == "" || conn == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.extras[name]; ok {
+		if existing != conn {
+			_ = conn.Close()
+		}
+		return
+	}
+	s.extras[name] = conn
+}
+
 func (s *Server) CloseExtras() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -76,20 +76,12 @@ func App() {
 		l.Fatal().Err(err).Msg("не удалось подготовить схему TrB.sht")
 	}
 
-	var peers []admin.Peer
+	var extraConfigs []postgres.NamedConfig
 	for _, item := range postgres.NamedConfigs() {
 		if item.Default {
 			continue
 		}
-		pool, err := wait.Until(ctx, l, "PostgreSQL:"+item.Name, func(ctx context.Context) (*pgxpool.Pool, error) {
-			return postgres.Connect(ctx, item.Config)
-		})
-		if err != nil {
-			l.Error().Err(err).Str("name", item.Name).Msg("не удалось подключить дополнительный PostgreSQL")
-			continue
-		}
-		peers = append(peers, admin.Peer{Name: item.Name, Host: item.Host, Home: pool, Cfg: item.Config})
-		l.Info().Str("name", item.Name).Str("host", item.Host).Msg("дополнительный PostgreSQL подключён")
+		extraConfigs = append(extraConfigs, item)
 	}
 
 	port := env.Get("PORT")
@@ -105,9 +97,26 @@ func App() {
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
 	biz := server.New(ch, pg, l)
-	adm = admin.NewWithPeers(pg, pgCfg, l, peers)
+	adm = admin.NewWithPeers(pg, pgCfg, l, nil)
 	server.Register(gs, biz)
 	admin.Register(gs, adm)
+
+	// Дополнительные соединения подключаем в фоне: недоступная на старте БД
+	// не должна мешать обслуживать основное соединение.
+	for _, item := range extraConfigs {
+		item := item
+		go func() {
+			pool, err := wait.Until(ctx, l, "PostgreSQL:"+item.Name, func(ctx context.Context) (*pgxpool.Pool, error) {
+				return postgres.Connect(ctx, item.Config)
+			})
+			if err != nil {
+				l.Error().Err(err).Str("name", item.Name).Msg("не удалось подключить дополнительный PostgreSQL")
+				return
+			}
+			adm.AddPeer(admin.Peer{Name: item.Name, Host: item.Host, Home: pool, Cfg: item.Config})
+			l.Info().Str("name", item.Name).Str("host", item.Host).Msg("дополнительный PostgreSQL подключён")
+		}()
+	}
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
