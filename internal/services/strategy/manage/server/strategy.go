@@ -88,11 +88,21 @@ func (s *Server) UpdateStrategy(ctx context.Context, req *strategypb.UpdateStrat
 	return s.strategyOrErr(row)
 }
 
+// DeleteStrategy переключает архивный статус: активную стратегию отправляет в
+// архив, архивную — возвращает из него. archived в ответе — новое состояние.
 func (s *Server) DeleteStrategy(ctx context.Context, req *strategypb.DeleteStrategyRequest) (*strategypb.DeleteStrategyResponse, error) {
-	if err := postgres.ArchiveStrategy(ctx, s.pg, req.GetId()); err != nil {
+	if req.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "id обязателен")
+	}
+	row, err := postgres.GetStrategy(ctx, s.pg, req.GetId())
+	if err != nil {
 		return nil, mapErr(err)
 	}
-	return &strategypb.DeleteStrategyResponse{Id: req.GetId(), Archived: true}, nil
+	next := !row.Archived
+	if err := postgres.SetStrategyArchived(ctx, s.pg, req.GetId(), next); err != nil {
+		return nil, mapErr(err)
+	}
+	return &strategypb.DeleteStrategyResponse{Id: req.GetId(), Archived: next}, nil
 }
 
 func (s *Server) ValidateStrategy(_ context.Context, req *strategypb.ValidateStrategyRequest) (*strategypb.ValidateStrategyResponse, error) {

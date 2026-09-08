@@ -118,6 +118,18 @@ func ArchiveStrategy(ctx context.Context, pool *pgxpool.Pool, id string) error {
 	return nil
 }
 
+// SetStrategyArchived переводит стратегию в архив или возвращает из него.
+func SetStrategyArchived(ctx context.Context, pool *pgxpool.Pool, id string, archived bool) error {
+	tag, err := pool.Exec(ctx, `UPDATE strategy SET archived = $2, updated_at = now() WHERE id = $1`, id, archived)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // --- backtest_run ---
 
 type BacktestRunRow struct {

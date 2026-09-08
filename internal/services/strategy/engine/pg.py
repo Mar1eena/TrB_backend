@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
 import envutil
+import jsonutil
 import psycopg
 from psycopg_pool import ConnectionPool
 
 log = logging.getLogger(__name__)
 
 _pool: ConnectionPool | None = None
+
+
+json_dumps = jsonutil.dumps
 
 
 def _dsn() -> str:
@@ -104,7 +107,7 @@ def write_backtest_result(run_id: str, metrics: dict[str, float]) -> None:
                 VALUES (%s, {", ".join(["%s"] * len(promoted))}, %s)
                 ON CONFLICT (run_id) DO UPDATE SET
                 {", ".join(f"{k}=EXCLUDED.{k}" for k in promoted)}, metrics=EXCLUDED.metrics""",
-            (run_id, *vals, json.dumps(metrics)),
+            (run_id, *vals, json_dumps(metrics)),
         )
 
 
@@ -169,7 +172,7 @@ def mark_search_status(search_id: str, status: str, *, error: str = "", engine_v
 
 def update_search_progress(search_id: str, progress: dict[str, Any]) -> None:
     with _conn() as c:
-        c.execute("UPDATE search_run SET progress=%s WHERE id=%s", (json.dumps(progress), search_id))
+        c.execute("UPDATE search_run SET progress=%s WHERE id=%s", (json_dumps(progress), search_id))
 
 
 def search_is_canceled(search_id: str) -> bool:
@@ -191,7 +194,7 @@ def insert_search_candidate(
                ON CONFLICT (search_run_id, spec_hash) DO NOTHING
                RETURNING id""",
             (search_run_id, spec_json, spec_hash, params_json, backtest_run_id,
-             score, json.dumps(metrics), generation, status),
+             score, json_dumps(metrics), generation, status),
         ).fetchone()
     return str(row[0]) if row else ""
 

@@ -67,6 +67,8 @@ def get_value(spec: spec_pb2.StrategySpec, path: str) -> float:
 
 
 def set_value(spec: spec_pb2.StrategySpec, path: str, value: float) -> None:
+    if value is None:
+        return
     parent, field = _resolve(spec, path)
     fd = parent.DESCRIPTOR.fields_by_name.get(field)
     if fd is None:
@@ -80,6 +82,8 @@ def set_value(spec: spec_pb2.StrategySpec, path: str, value: float) -> None:
 
 def apply_params(spec: spec_pb2.StrategySpec, params: dict[str, float]) -> None:
     for path, value in params.items():
+        if value is None:
+            continue
         try:
             set_value(spec, path, value)
         except PathError:
@@ -130,9 +134,18 @@ def mutate_params(params: dict[str, float], space: list[search_pb2.ParamRange],
 
 
 def crossover_params(a: dict[str, float], b: dict[str, float], rng: random.Random) -> dict[str, float]:
-    keys = set(a) | set(b)
-    return {k: (a.get(k) if rng.random() < 0.5 else b.get(k)) for k in keys
-            if (a.get(k) if rng.random() < 0.5 else b.get(k)) is not None}
+    out: dict[str, float] = {}
+    for k in set(a) | set(b):
+        va, vb = a.get(k), b.get(k)
+        # Ген берём от одного из родителей случайно; если у выбранного его нет —
+        # берём от второго. Раньше жребий бросался дважды (в значении и в фильтре),
+        # из-за чего ключ мог остаться с None и уронить apply_params.
+        pick = va if rng.random() < 0.5 else vb
+        if pick is None:
+            pick = va if vb is None else vb
+        if pick is not None:
+            out[k] = pick
+    return out
 
 
 # --- мутация структуры (в границах StructureSpace) ---

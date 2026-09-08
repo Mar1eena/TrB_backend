@@ -8,6 +8,7 @@ import os
 from typing import TYPE_CHECKING
 
 import metrics
+import pg
 from clickhouse_client import create_client
 from runner import BacktestError, run_backtest
 from search.runner import SearchError, run_search
@@ -160,4 +161,11 @@ def _handle_search(ch_client: Client, data: bytes) -> None:
     if not task.search_id:
         log.warning("SearchTask без search_id")
         return
-    run_search(ch_client, task.search_id)
+    try:
+        run_search(ch_client, task.search_id)
+    except SearchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # задача будет ACK-нута как poison — иначе search_run навсегда остался бы в running
+        pg.mark_search_status(task.search_id, "failed", error=str(exc))
+        raise

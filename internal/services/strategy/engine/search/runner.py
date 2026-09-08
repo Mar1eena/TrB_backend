@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
+import math
 import random
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -95,7 +95,7 @@ def run_search(ch_client, search_id: str) -> None:
     gs = GeneticSearch(base_spec=base_spec, space=space, structure=structure,
                        population_size=population, rng=rng)
 
-    config_json = json.dumps(_config_dict(config))
+    config_json = pg.json_dumps(_config_dict(config))
     df_records = df.to_numpy().tolist()
     df_index = [t.isoformat() for t in df.index]
     df_cols = list(df.columns)
@@ -135,7 +135,7 @@ def run_search(ch_client, search_id: str) -> None:
             if gen % PROGRESS_EVERY == 0 or gen == generations - 1:
                 pg.update_search_progress(search_id, {
                     "status": "RUN_RUNNING", "evaluated": evaluated,
-                    "total": max_evals, "best_score": best_score,
+                    "total": max_evals, "best_score": _score_or_none(best_score),
                     "best_candidate_id": best_id, "current_generation": gen,
                 })
             if _stop(search_id, deadline, evaluated, max_evals):
@@ -147,11 +147,16 @@ def run_search(ch_client, search_id: str) -> None:
     pg.update_search_progress(search_id, {
         "status": "RUN_SUCCEEDED" if final_status == "succeeded" else "RUN_CANCELED",
         "evaluated": evaluated, "total": max_evals,
-        "best_score": best_score, "best_candidate_id": best_id,
+        "best_score": _score_or_none(best_score), "best_candidate_id": best_id,
         "current_generation": gs.generation,
     })
     pg.mark_search_status(search_id, final_status, engine_version=ENGINE_VERSION)
-    log.info("search %s: %s, оценено %s, лучший score=%.4f", search_id, final_status, evaluated, best_score)
+    log.info("search %s: %s, оценено %s, лучший score=%s", search_id, final_status, evaluated, best_score)
+
+
+def _score_or_none(score: float) -> float | None:
+    """-inf (ни один кандидат не оценён) не сериализуется в jsonb — отдаём null."""
+    return score if math.isfinite(score) else None
 
 
 def _persist_candidate(ch_client, search_id: str, ind: Individual, metrics: dict,
@@ -164,7 +169,7 @@ def _persist_candidate(ch_client, search_id: str, ind: Individual, metrics: dict
     backtest_run_id = None
     cand_id = pg.insert_search_candidate(
         search_run_id=search_id, spec_json=spec_json, spec_hash=h,
-        params_json=json.dumps(ind.params), backtest_run_id=backtest_run_id,
+        params_json=pg.json_dumps(ind.params), backtest_run_id=backtest_run_id,
         score=score, metrics=metrics or {}, generation=generation, status=status,
     )
     if cand_id and metrics:
