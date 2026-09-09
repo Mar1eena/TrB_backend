@@ -58,7 +58,7 @@ x-services-config: &services-config
   deploy:
     resources:
       limits:
-        cpus: '1'
+        # cpus: '16'
         memory: 128M
       reservations:
         memory: 64M
@@ -307,8 +307,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2'
-          memory: 3072M
+          memory: 6072M
         reservations:
           memory: 256M
 
