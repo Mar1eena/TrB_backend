@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	chpkg "github.com/Mar1eena/TrB_V3/internal/services/clickhouse/pkg"
-	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
+	chdb "github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
+	hcpb "github.com/Mar1eena/trb_proto/gen/go/historiccandle"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -22,12 +22,13 @@ type lastDownloadRow struct {
 	HasDownload uint8     `ch:"has_download"`
 }
 
-func (s *Server) ListLastDownloads(ctx context.Context, req *chmgr.ListLastDownloadsRequest) (*chmgr.ListLastDownloadsResponse, error) {
+func (s *Server) ListLastDownloads(ctx context.Context, req *hcpb.ListLastDownloadsRequest) (*hcpb.ListLastDownloadsResponse, error) {
 	if req == nil {
-		req = &chmgr.ListLastDownloadsRequest{}
+		req = &hcpb.ListLastDownloadsRequest{}
 	}
-	q, limit, offset := chpkg.FilterFrom(req.GetFilter(), 500, 5000)
-	clause, searchArgs, next := chpkg.SearchClause(q, "", 1)
+	f := req.GetFilter()
+	q, limit, offset := chdb.FilterFrom(f.GetQ(), int(f.GetLimit()), int(f.GetOffset()), 500, 5000)
+	clause, searchArgs, next := chdb.SearchClause(q, "", 1)
 
 	query := fmt.Sprintf(`
 SELECT
@@ -58,25 +59,25 @@ LIMIT $%d OFFSET $%d`, clause, next, next+1)
 
 	args := append(searchArgs, uint64(limit), uint64(offset))
 	var rows []lastDownloadRow
-	if err := s.db(ctx).Select(ctx, &rows, query, args...); err != nil {
+	if err := s.ch.Select(ctx, &rows, query, args...); err != nil {
 		s.log.Error().Err(err).Str("q", q).Msg("не удалось загрузить историю загрузок")
 		return nil, status.Errorf(codes.Internal, "не удалось загрузить историю загрузок: %v", err)
 	}
 
-	items := make([]*chmgr.LastDownload, 0, len(rows))
+	items := make([]*hcpb.LastDownload, 0, len(rows))
 	for i := range rows {
 		row := &rows[i]
-		items = append(items, &chmgr.LastDownload{
+		items = append(items, &hcpb.LastDownload{
 			Uid:         row.UID,
 			Figi:        row.Figi,
 			Ticker:      row.Ticker,
 			Name:        row.Name,
 			Interval:    row.Interval,
-			LastStart:   chpkg.PbTime(row.LastStart),
-			LastEnd:     chpkg.PbTime(row.LastEnd),
+			LastStart:   chdb.PbTime(row.LastStart),
+			LastEnd:     chdb.PbTime(row.LastEnd),
 			HasDownload: row.HasDownload != 0,
 		})
 	}
 	s.log.Info().Int("count", len(items)).Str("q", q).Msg("история загрузок получена")
-	return &chmgr.ListLastDownloadsResponse{Items: items}, nil
+	return &hcpb.ListLastDownloadsResponse{Items: items}, nil
 }

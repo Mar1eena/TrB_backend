@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	chpkg "github.com/Mar1eena/TrB_V3/internal/services/clickhouse/pkg"
-	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
+	chdb "github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
+	hcpb "github.com/Mar1eena/trb_proto/gen/go/historiccandle"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -30,9 +30,9 @@ type historicCandleRow struct {
 	IsComplete   bool      `ch:"is_complete"`
 }
 
-func (s *Server) ListCandles(ctx context.Context, req *chmgr.ListCandlesRequest) (*chmgr.ListCandlesResponse, error) {
+func (s *Server) ListCandles(ctx context.Context, req *hcpb.ListCandlesRequest) (*hcpb.ListCandlesResponse, error) {
 	if req == nil {
-		req = &chmgr.ListCandlesRequest{}
+		req = &hcpb.ListCandlesRequest{}
 	}
 	uid := strings.TrimSpace(req.GetUid())
 	if uid == "" {
@@ -49,7 +49,7 @@ func (s *Server) ListCandles(ctx context.Context, req *chmgr.ListCandlesRequest)
 	if to.Before(from) {
 		return nil, status.Error(codes.InvalidArgument, "to не может быть раньше from")
 	}
-	limit := chpkg.ClampLimit(int(req.GetLimit()), listCandlesDefaultLimit, listCandlesMaxLimit)
+	limit := chdb.ClampLimit(int(req.GetLimit()), listCandlesDefaultLimit, listCandlesMaxLimit)
 	newestFirst := req.GetNewestFirst()
 	// Старые grpc-web клиенты не умеют newest_first. Широкое окно + limit = догрузка с конца.
 	if !newestFirst && to.Sub(from) >= 14*24*time.Hour {
@@ -73,7 +73,7 @@ SELECT
 	candle_source,
 	is_complete
 FROM TrB.hct
-WHERE interval = $1 
+WHERE interval = $1
     AND uid = $2
     AND time >= $3
 	AND time <= $4
@@ -81,16 +81,16 @@ ORDER BY time %s
 LIMIT $5`, order)
 
 	var rows []historicCandleRow
-	if err := s.db(ctx).Select(ctx, &rows, query, req.GetInterval(), uid, from, to, uint64(limit)); err != nil {
+	if err := s.ch.Select(ctx, &rows, query, req.GetInterval(), uid, from, to, uint64(limit)); err != nil {
 		s.log.Error().Err(err).Str("uid", uid).Int32("interval", req.GetInterval()).Msg("не удалось загрузить свечи")
 		return nil, status.Errorf(codes.Internal, "не удалось загрузить свечи: %v", err)
 	}
 
-	items := make([]*chmgr.HistoricCandleRow, 0, len(rows))
+	items := make([]*hcpb.HistoricCandleRow, 0, len(rows))
 	for i := range rows {
 		row := &rows[i]
-		items = append(items, &chmgr.HistoricCandleRow{
-			Time:         chpkg.PbTime(row.Time),
+		items = append(items, &hcpb.HistoricCandleRow{
+			Time:         chdb.PbTime(row.Time),
 			Open:         row.Open,
 			High:         row.High,
 			Low:          row.Low,
@@ -113,5 +113,5 @@ LIMIT $5`, order)
 		Int("count", len(items)).
 		Bool("newest_first", newestFirst).
 		Msg("исторические свечи получены")
-	return &chmgr.ListCandlesResponse{Items: items}, nil
+	return &hcpb.ListCandlesResponse{Items: items}, nil
 }

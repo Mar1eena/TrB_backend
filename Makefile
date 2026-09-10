@@ -8,7 +8,7 @@ cmd_historiccandle = ./internal/services/historicCandle/cmd/main.go
 cmd_historiccandle_scheduler = ./internal/services/historicCandle_scheduler/cmd/main.go
 cmd_invest = ./internal/services/invest/cmd/main.go
 cmd_postgre = ./internal/services/postgre/cmd/main.go
-cmd_test = ./internal/services/test/cmd/main.go
+cmd_instruments = ./internal/services/instruments/cmd/main.go
 cmd_indicators_manage = ./internal/services/indicators/manage/cmd/main.go
 cmd_indicators_calculation = ./internal/services/indicators/calculation/main.py
 indicators_dockerfile = ./build/docker/services/indicators/Dockerfile
@@ -17,7 +17,7 @@ cmd_strategy_engine = ./internal/services/strategy/engine/main.py
 strategy_dockerfile = ./build/docker/services/strategy/Dockerfile
 TRB_PROTO_REF ?= main
 
-.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db test services gene invest ver indicators indicators-manage indicators-calculation indicators-docker indicators-manage-docker indicators-calculation-docker strategy strategy-manage strategy-engine strategy-docker strategy-manage-docker strategy-engine-docker
+.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db instruments services gene invest ver indicators indicators-manage indicators-calculation indicators-docker indicators-manage-docker indicators-calculation-docker strategy strategy-manage strategy-engine strategy-docker strategy-manage-docker strategy-engine-docker
 
 up:
 	docker-compose --project-name=${name} up -d
@@ -56,8 +56,8 @@ postgre:
 postgre-1c-db:
 	docker build -f ${postgre_1c_dockerfile} ./build/docker/postgre-1c-db -t postgre-1c-db:latest
 
-test:
-	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_test} -t test:latest
+instruments:
+	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_instruments} -t instruments:latest
 
 indicators: indicators-manage
 
@@ -97,7 +97,7 @@ ver:
 
 # Сначала обновляет trb_proto, затем собирает все сервисы
 # historicCandleScheduler — пока не реализован (см. README)
-build: gene ver historicCandle invest indicators-docker strategy-docker postgre postgre-1c-db test clickhouse nats envoy
+build: gene ver historicCandle invest indicators-docker strategy-docker postgre postgre-1c-db instruments clickhouse nats envoy
 
 make upd: build up
 

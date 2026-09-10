@@ -132,17 +132,31 @@ static_resources:
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
-                            prefix: /trb.test.v1.Test
+                            prefix: /trb.instruments.v1.Instruments
                           route:
-                            cluster: test
+                            cluster: instruments
                             timeout: 120s
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
-                            prefix: /v1/test
+                            prefix: /v1/instruments
                           route:
-                            cluster: test
+                            cluster: instruments
                             timeout: 120s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
+                            prefix: /trb.historiccandle.v1.HistoricCandle
+                          route:
+                            cluster: historiccandle
+                            timeout: 60s
+                            request_mirror_policies:
+                              cluster: debuger_grpc
+                        - match:
+                            prefix: /v1/historic-candles
+                          route:
+                            cluster: historiccandle
+                            timeout: 60s
                             request_mirror_policies:
                               cluster: debuger_grpc
                         - match:
@@ -151,22 +165,7 @@ static_resources:
                             cluster: clickhouse
                             timeout: 60s
                         - match:
-                            prefix: /trb.clickhouse.v1.ClickHouse
-                          route:
-                            cluster: clickhouse
-                            timeout: 60s
-                        - match:
                             prefix: /v1/clickhouse
-                          route:
-                            cluster: clickhouse
-                            timeout: 60s
-                        - match:
-                            prefix: /v1/instruments
-                          route:
-                            cluster: clickhouse
-                            timeout: 60s
-                        - match:
-                            prefix: /v1/historic-candles
                           route:
                             cluster: clickhouse
                             timeout: 60s
@@ -225,9 +224,9 @@ static_resources:
                         - trb.nats.v1.Nats_Admin
                         - trb.postgresql.v1.PostgreSQL_Admin
                         - trb.postgresql.v1.PostgreSQL
-                        - trb.test.v1.Test
+                        - trb.instruments.v1.Instruments
+                        - trb.historiccandle.v1.HistoricCandle
                         - trb.clickhouse.v1.ClickHouse_Admin
-                        - trb.clickhouse.v1.ClickHouse
                         - trb.indicators.v1.Indicator_Settings
                         - trb.strategy.v1.StrategyService
                       print_options:
@@ -302,7 +301,7 @@ static_resources:
                     socket_address:
                       address: postgre
                       port_value: 9091
-    - name: test
+    - name: instruments
       connect_timeout: 0.25s
       lb_policy: ROUND_ROBIN
       dns_lookup_family: V4_ONLY
@@ -313,13 +312,32 @@ static_resources:
           explicit_http_config:
             http2_protocol_options: {}
       load_assignment:
-        cluster_name: test
+        cluster_name: instruments
         endpoints:
           - lb_endpoints:
               - endpoint:
                   address:
                     socket_address:
-                      address: test
+                      address: instruments
+                      port_value: 9091
+    - name: historiccandle
+      connect_timeout: 0.25s
+      lb_policy: ROUND_ROBIN
+      dns_lookup_family: V4_ONLY
+      type: STRICT_DNS
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: historiccandle
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: historiccandle
                       port_value: 9091
     - name: clickhouse
       connect_timeout: 0.25s

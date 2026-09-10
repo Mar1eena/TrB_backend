@@ -21,7 +21,6 @@ type ConnInfo struct {
 
 type Server struct {
 	chmgr.UnimplementedClickHouse_AdminServer
-	chmgr.UnimplementedClickHouseServer
 	ch          driver.Conn
 	extras      map[string]driver.Conn
 	infos       []ConnInfo
@@ -30,10 +29,7 @@ type Server struct {
 	mu          sync.Mutex
 }
 
-var (
-	_ chmgr.ClickHouse_AdminServer = (*Server)(nil)
-	_ chmgr.ClickHouseServer       = (*Server)(nil)
-)
+var _ chmgr.ClickHouse_AdminServer = (*Server)(nil)
 
 func New(ch driver.Conn, log zlog.Logger) *Server {
 	return NewWithExtras(ch, log, nil, "default")
@@ -132,5 +128,4 @@ func (s *Server) CloseExtras() {
 
 func Register(srv *grpc.Server, service *Server) {
 	chmgr.RegisterClickHouse_AdminServer(srv, service)
-	chmgr.RegisterClickHouseServer(srv, service)
 }

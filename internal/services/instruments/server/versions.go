@@ -4,16 +4,16 @@ import (
 	"context"
 	"strings"
 
-	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
-	chpkg "github.com/Mar1eena/TrB_V3/internal/services/clickhouse/pkg"
-	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
+	chdb "github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
+	instrpkg "github.com/Mar1eena/TrB_V3/internal/services/instruments/pkg"
+	instrpb "github.com/Mar1eena/trb_proto/gen/go/instruments"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func (s *Server) ListInstrumentVersions(ctx context.Context, req *chmgr.ListInstrumentVersionsRequest) (*chmgr.ListInstrumentVersionsResponse, error) {
+func (s *Server) ListInstrumentVersions(ctx context.Context, req *instrpb.ListInstrumentVersionsRequest) (*instrpb.ListInstrumentVersionsResponse, error) {
 	if req == nil {
-		req = &chmgr.ListInstrumentVersionsRequest{}
+		req = &instrpb.ListInstrumentVersionsRequest{}
 	}
 	uid := strings.TrimSpace(req.GetUid())
 	if uid == "" {
@@ -22,18 +22,18 @@ func (s *Server) ListInstrumentVersions(ctx context.Context, req *chmgr.ListInst
 
 	// Без FINAL — все незамёрженные версии ReplacingMergeTree.
 	query := `
-SELECT ` + clickhouse.ShtSelectColumns + `
+SELECT ` + chdb.ShtSelectColumns + `
 FROM TrB.sht
 WHERE uid = $1
 ORDER BY version DESC`
 
-	var rows []chpkg.InstrumentRow
-	if err := s.db(ctx).Select(ctx, &rows, query, uid); err != nil {
+	var rows []instrpkg.InstrumentRow
+	if err := s.ch.Select(ctx, &rows, query, uid); err != nil {
 		s.log.Error().Err(err).Str("uid", uid).Msg("не удалось загрузить версии инструмента")
 		return nil, status.Errorf(codes.Internal, "не удалось загрузить версии: %v", err)
 	}
 
-	items := make([]*chmgr.InstrumentVersion, 0, len(rows))
+	items := make([]*instrpb.InstrumentVersion, 0, len(rows))
 	seen := make(map[int64]struct{}, len(rows))
 	for i := range rows {
 		key := rows[i].Version.UTC().UnixMilli()
@@ -41,12 +41,12 @@ ORDER BY version DESC`
 			continue
 		}
 		seen[key] = struct{}{}
-		items = append(items, &chmgr.InstrumentVersion{
-			Share:   chpkg.InstrumentFromRow(&rows[i], false),
-			Version: chpkg.PbTime(rows[i].Version),
+		items = append(items, &instrpb.InstrumentVersion{
+			Share:   instrpkg.InstrumentFromRow(&rows[i], false),
+			Version: chdb.PbTime(rows[i].Version),
 		})
 	}
 
 	s.log.Info().Str("uid", uid).Int("count", len(items)).Msg("версии инструмента загружены")
-	return &chmgr.ListInstrumentVersionsResponse{Items: items}, nil
+	return &instrpb.ListInstrumentVersionsResponse{Items: items}, nil
 }

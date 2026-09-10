@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	chdb "github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
 	tinvest "github.com/Mar1eena/trb_proto/gen/go/api/tinvest"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -85,15 +86,15 @@ func InstrumentFromRow(row *InstrumentRow, lite bool) *tinvest.Share {
 	out.ApiTradeAvailableFlag = row.APITradeAvailableFlag
 	out.BuyAvailableFlag = row.BuyAvailableFlag
 	out.SellAvailableFlag = row.SellAvailableFlag
-	out.First_1MinCandleDate = PbTime(row.First1MinCandleDate)
-	out.First_1DayCandleDate = PbTime(row.First1DayCandleDate)
+	out.First_1MinCandleDate = chdb.PbTime(row.First1MinCandleDate)
+	out.First_1DayCandleDate = chdb.PbTime(row.First1DayCandleDate)
 	out.Klong = floatToQuotation(row.Klong)
 	out.Kshort = floatToQuotation(row.Kshort)
 	out.Dlong = floatToQuotation(row.Dlong)
 	out.Dshort = floatToQuotation(row.Dshort)
 	out.DlongMin = floatToQuotation(row.DlongMin)
 	out.DshortMin = floatToQuotation(row.DshortMin)
-	out.IpoDate = PbTime(row.IpoDate)
+	out.IpoDate = chdb.PbTime(row.IpoDate)
 	out.IssueSize = row.IssueSize
 	out.CountryOfRisk = row.CountryOfRisk
 	out.CountryOfRiskName = row.CountryOfRiskName
@@ -180,7 +181,7 @@ func InstrumentToRow(item *tinvest.Share, version time.Time) InstrumentRow {
 		First1DayCandleDate:   pbAsTime(item.GetFirst_1DayCandleDate()),
 		DlongClient:           quotationFloat(item.GetDlongClient()),
 		DshortClient:          quotationFloat(item.GetDshortClient()),
-		Version:               VersionUTC(version),
+		Version:               chdb.VersionUTC(version),
 	}
 	if nominal := item.GetNominal(); nominal != nil {
 		row.NominalCurrency = nominal.GetCurrency()

@@ -44,10 +44,6 @@ func App() {
 		return
 	}
 
-	if err := clickhouse.EnsureShtSchema(ctx, ch); err != nil {
-		l.Fatal().Err(err).Msg("не удалось подготовить схему TrB.sht")
-	}
-
 	named := clickhouse.NamedConfigs()
 	infos := make([]server.ConnInfo, 0, len(named))
 	extraConfigs := make([]clickhouse.NamedConfig, 0, len(named))

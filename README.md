@@ -20,7 +20,7 @@ Tinkoff Invest API
         ▼
 ┌───────────────────────────────────────────────────┐
 │  Go-сервисы                                       │
-│  shares │ historicCandle │ invest │ ...                   │
+│  instruments │ historicCandle │ invest │ clickhouse │ ... │
 └───────┬─────────────┬──────────────┬────────────┘
         │             │              │
         ▼             ▼              ▼
@@ -31,7 +31,7 @@ Tinkoff Invest API
 
 **Основной поток данных:**
 
-1. `shares` загружает справочник инструментов в ClickHouse (`TrB.sht`).
+1. `instruments` загружает справочник инструментов в ClickHouse (`TrB.sht`).
 2. `historicCandle` догружает исторические свечи в `TrB.hct` по заданиям из NATS (`TrB.HistoricCandle.Task.{uid}.{interval}`).
 3. `MarketData` (опционально) получает потоковые свечи и пишет в `TrB.Candle` / `TrB.hct`.
 4. `manager_indicators` читает задачи из NATS, кэширует свечи в Redis и передаёт задачу исполнителю.
@@ -104,7 +104,7 @@ PORT=9091
 ### 2. Сборка образов
 
 ```bash
-make shares
+make instruments
 make historicCandle
 make mng_i
 make nats
@@ -131,12 +131,17 @@ make down    # остановить
 
 ## Сервисы
 
-### `shares`
+### `instruments`
 
-Синхронизирует справочник акций из Tinkoff Instruments API в таблицу `TrB.sht`.
+Каталог инструментов в `TrB.sht`: читает/пишет справочник и синхронизирует его из
+Tinkoff Instruments API (через сервис `invest`). Подключается к ClickHouse напрямую.
+Контракт — `trb.instruments.v1.Instruments` (`services/instruments/instruments.proto`).
+
+RPC: `ListInstruments`, `ListInstrumentVersions`, `UpsertInstruments`, `SyncInstruments`.
 
 ```bash
-make shares
+make instruments
+go run ./internal/services/instruments/cmd/
 ```
 
 Запускается в compose по умолчанию. Без актуального справочника `historicCandle` не сможет определить точку начала загрузки для инструмента.
@@ -336,23 +341,21 @@ JSON (через Envoy :8081): `GET /v1/scheduler/targets`, `PUT /v1/scheduler/t
 
 ### `clickhouse`
 
-gRPC API ClickHouse: админка схемы (DDL) и бизнес-логика (`TrB.sht`, `hct_last_download`). Произвольный SQL с клиента в админке не принимается — идентификаторы и выражения проверяются на сервере. Native протокол ClickHouse — `clickhouse.grpc.ClickHouse`.
+Только администрирование ClickHouse: DDL схемы, мониторинг, произвольный SQL. Идентификаторы и выражения проверяются на сервере. Native протокол ClickHouse — `clickhouse.grpc.ClickHouse`.
 
-Контракты в [TrB_proto](https://github.com/Mar1eena/TrB_proto): `trb.clickhouse.v1.ClickHouse_Admin` (`services/clickhouse/admin.proto`) и `trb.clickhouse.v1.ClickHouse` (`services/clickhouse/clickhouse.proto`).
+Контракт в [TrB_proto](https://github.com/Mar1eena/TrB_proto): `trb.clickhouse.v1.ClickHouse_Admin` (`services/clickhouse/admin.proto`).
 
-| RPC (`ClickHouse`) | Назначение |
-|---|---|
-| `ListInstruments` | Справочник акций |
-| `ListInstrumentVersions` | История версий инструмента |
-| `UpsertInstruments` | Запись акций в `TrB.sht` |
-| `ListLastDownloads` | История догрузок |
+Доменные методы поверх ClickHouse вынесены в свои сервисы:
+
+- каталог инструментов (`TrB.sht`) → сервис `instruments` (`trb.instruments.v1.Instruments`): `ListInstruments`, `ListInstrumentVersions`, `UpsertInstruments`, `SyncInstruments`;
+- исторические свечи (`TrB.hct`, `hct_last_download`) → gRPC-часть сервиса `historicCandle` (`trb.historiccandle.v1.HistoricCandle`): `ListCandles`, `ListLastDownloads`.
 
 ```bash
 make clickhouse
 go run ./internal/services/clickhouse/cmd/
 ```
 
-JSON (через Envoy :8081): `GET /v1/clickhouse/ping`, `GET /v1/instruments`, `GET /v1/historic-candles/last-downloads`.
+JSON (через Envoy :8081): `GET /v1/clickhouse/ping`, `GET /v1/instruments` (сервис instruments), `GET /v1/historic-candles/last-downloads` (сервис historicCandle).
 
 ---
 
@@ -419,9 +422,9 @@ Envoy проксирует gRPC-сервисы и предоставляет JSO
 | `/trb.postgresql.v1.PostgreSQL` | postgre (gRPC) |
 | `/v1/scheduler` | postgre (JSON REST) |
 | `/trb.clickhouse.v1.ClickHouse_Admin` | clickhouse admin (gRPC) |
-| `/trb.clickhouse.v1.ClickHouse` | clickhouse (gRPC) |
-| `/v1/clickhouse`, `/v1/instruments`, `/v1/historic-candles` | clickhouse (JSON REST) |
-| `/trb.test.v1.Test` | test (gRPC) |
+| `/v1/clickhouse` | clickhouse admin (JSON REST) |
+| `/trb.instruments.v1.Instruments`, `/v1/instruments` | instruments (gRPC + JSON REST) |
+| `/trb.historiccandle.v1.HistoricCandle`, `/v1/historic-candles` | historicCandle (gRPC + JSON REST) |
 | `/clickhouse.grpc.ClickHouse` | ClickHouse gRPC |
 
 Админка Envoy: `http://localhost:9901`.
@@ -515,7 +518,7 @@ HTTP ClickHouse: `http://localhost:8123`. TTL логов — по схеме Cli
 ```bash
 # из корня репозитория, с настроенным .env
 go run ./internal/services/historicCandle/cmd/
-go run ./internal/services/shares/cmd/
+go run ./internal/services/instruments/cmd/
 go run ./internal/services/manager_indicators/cmd/
 go run ./internal/services/invest/cmd/
 go run ./internal/services/postgre/cmd/

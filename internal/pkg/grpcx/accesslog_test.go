@@ -33,7 +33,7 @@ func TestSkipHealth(t *testing.T) {
 	if !skipMethod("/grpc.health.v1.Health/Check") {
 		t.Fatal("health не должен попадать в access-лог")
 	}
-	if skipMethod("/trb.clickhouse.v1.ClickHouse/ListInstruments") {
+	if skipMethod("/trb.instruments.v1.Instruments/ListInstruments") {
 		t.Fatal("обычный метод не скип")
 	}
 }

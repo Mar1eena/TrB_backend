@@ -86,6 +86,10 @@ services:
     <<: [*services-config]
     container_name: trb-historiccandle
     image: historiccandle:latest
+    build:
+      <<: *go-build
+      args:
+        CMD_PATH: ./internal/services/historicCandle/cmd/main.go
     depends_on:
       - clickhouse-db
       - invest
@@ -127,17 +131,17 @@ services:
       # postgre-1c-db:
       #   condition: service_healthy
 
-  test:
+  instruments:
     <<: [*services-config]
-    container_name: trb-test
-    image: test:latest
+    container_name: trb-instruments
+    image: instruments:latest
     build:
       <<: *go-build
       args:
-        CMD_PATH: ./internal/services/test/cmd/main.go
+        CMD_PATH: ./internal/services/instruments/cmd/main.go
     depends_on:
       - invest
-      - clickhouse
+      - clickhouse-db
     deploy:
       resources:
         limits:

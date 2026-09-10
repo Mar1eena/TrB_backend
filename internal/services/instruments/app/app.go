@@ -8,13 +8,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	chdb "github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/env"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
-	chclient "github.com/Mar1eena/TrB_V3/internal/services/clickhouse/client"
-	investclient "github.com/Mar1eena/TrB_V3/internal/services/invest/client"
-	"github.com/Mar1eena/TrB_V3/internal/services/test/server"
+	"github.com/Mar1eena/TrB_V3/internal/services/instruments/server"
+	tinvest "github.com/Mar1eena/trb_proto/gen/go/api/tinvest"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 )
@@ -28,8 +29,8 @@ func App() {
 	defer stop()
 
 	var (
+		ch         driver.Conn
 		investConn *grpc.ClientConn
-		chConn     *grpc.ClientConn
 	)
 	defer func() {
 		if investConn != nil {
@@ -37,44 +38,49 @@ func App() {
 				l.Error().Err(err).Msg("ошибка закрытия соединения с invest")
 			}
 		}
-		if chConn != nil {
-			if err := chConn.Close(); err != nil {
-				l.Error().Err(err).Msg("ошибка закрытия соединения с clickhouse")
+		if ch != nil {
+			if err := ch.Close(); err != nil {
+				l.Error().Err(err).Msg("ошибка закрытия соединения с ClickHouse")
 			}
 		}
 	}()
 
 	g := wait.NewGroup(ctx, l)
-	investSlot := wait.Go(g, "invest", func(ctx context.Context) (*grpc.ClientConn, error) {
-		return investclient.DialFromEnv()
+	chSlot := wait.Go(g, "ClickHouse", func(ctx context.Context) (driver.Conn, error) {
+		return chdb.Connect(ctx, chdb.ClickHouse_config())
 	})
-	chSlot := wait.Go(g, "clickhouse", func(ctx context.Context) (*grpc.ClientConn, error) {
-		return chclient.DialFromEnv()
+	investSlot := wait.Go(g, "invest", func(ctx context.Context) (*grpc.ClientConn, error) {
+		addr := env.Addr("INVEST_API_URL", "INVEST_API_URL_DOCKER")
+		if addr == "" {
+			return nil, errors.New("INVEST_API_URL не задан")
+		}
+		l.Info().Str("addr", addr).Msg("подключение к gRPC invest")
+		return grpcx.DialInsecureWithLogger(addr, l)
 	})
 	if err := g.Wait(); err != nil {
 		l.Info().Err(err).Msg("сервис остановлен до подключения к зависимостям")
 		return
 	}
+	ch = chSlot.Get()
 	investConn = investSlot.Get()
-	chConn = chSlot.Get()
+
+	if err := chdb.EnsureShtSchema(ctx, ch); err != nil {
+		l.Fatal().Err(err).Msg("не удалось подготовить схему TrB.sht")
+	}
 
 	port := env.Get("PORT")
 	if port == "" {
 		port = "9091"
 	}
-	lis, err := net.Listen("tcp", ":"+port)
+	addr := "0.0.0.0:" + port
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		l.Fatal().Err(err).Msg("не удалось начать прослушивание порта " + port)
+		l.Fatal().Err(err).Msg("не удалось начать прослушивание " + addr)
 	}
-	l.Info().Str("port", port).Msg("test слушает gRPC")
+	l.Info().Str("addr", addr).Msg("instruments слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
-	service := server.New(
-		investclient.NewInstruments(investConn),
-		chclient.New(chConn),
-		l,
-	)
-	server.Register(gs, service)
+	server.Register(gs, server.New(ch, tinvest.NewInstrumentsServiceClient(investConn), l))
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {

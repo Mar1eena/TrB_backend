@@ -7,6 +7,7 @@ package app
 import (
 	"context"
 	"errors"
+	"net"
 	"os/signal"
 	"strconv"
 	"syscall"
@@ -18,6 +19,8 @@ import (
 	"github.com/Mar1eena/TrB_V3/internal/pkg/investgo"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/log/zlog"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
+	"github.com/Mar1eena/TrB_V3/internal/services/historicCandle/server"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 )
 
@@ -78,7 +81,35 @@ func App() {
 	conn = chSlot.Get()
 
 	md := investgo.NewMarketDataClient(ctx, investConn, l)
-	if err := runWorker(ctx, md, conn, l, cfg); err != nil && !errors.Is(err, context.Canceled) {
+
+	port := env.First("HISTORICCANDLE_PORT", "PORT")
+	if port == "" {
+		port = "9091"
+	}
+	addr := "0.0.0.0:" + port
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		l.Fatal().Err(err).Msg("не удалось начать прослушивание " + addr)
+	}
+	l.Info().Str("addr", addr).Msg("historicCandle слушает gRPC")
+
+	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
+	server.Register(gs, server.New(conn, l))
+
+	eg, egCtx := errgroup.WithContext(ctx)
+	eg.Go(func() error {
+		<-egCtx.Done()
+		gs.GracefulStop()
+		return nil
+	})
+	eg.Go(func() error {
+		return gs.Serve(lis)
+	})
+	eg.Go(func() error {
+		return runWorker(egCtx, md, conn, l, cfg)
+	})
+
+	if err := eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		l.Error().Err(err).Msg("сервис остановлен с ошибкой")
 		return
 	}

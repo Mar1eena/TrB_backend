@@ -5,15 +5,15 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
-	chpkg "github.com/Mar1eena/TrB_V3/internal/services/clickhouse/pkg"
+	chdb "github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
+	instrpkg "github.com/Mar1eena/TrB_V3/internal/services/instruments/pkg"
 	tinvest "github.com/Mar1eena/trb_proto/gen/go/api/tinvest"
-	chmgr "github.com/Mar1eena/trb_proto/gen/go/clickhouse"
+	instrpb "github.com/Mar1eena/trb_proto/gen/go/instruments"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesResponse) (*chmgr.UpsertInstrumentsResponse, error) {
+func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesResponse) (*instrpb.UpsertInstrumentsResponse, error) {
 	if req == nil {
 		req = &tinvest.SharesResponse{}
 	}
@@ -25,24 +25,24 @@ func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesRespo
 		return nil, status.Errorf(codes.Internal, "не удалось прочитать текущий справочник: %v", err)
 	}
 
-	now := chpkg.VersionUTC(time.Now())
+	now := chdb.VersionUTC(time.Now())
 	var (
 		inserted  int32
 		updated   int32
 		unchanged int32
-		toWrite   []chpkg.InstrumentRow
+		toWrite   []instrpkg.InstrumentRow
 	)
 	for _, item := range incoming {
 		if item == nil || item.GetUid() == "" {
 			continue
 		}
-		row := chpkg.InstrumentToRow(item, now)
+		row := instrpkg.InstrumentToRow(item, now)
 		prev, ok := existing[row.UID]
 		switch {
 		case !ok:
 			inserted++
 			toWrite = append(toWrite, row)
-		case !chpkg.ShareRequisitesEqual(&prev, &row) || chpkg.VersionIsZero(prev.Version):
+		case !instrpkg.ShareRequisitesEqual(&prev, &row) || chdb.VersionIsZero(prev.Version):
 			updated++
 			toWrite = append(toWrite, row)
 		default:
@@ -50,7 +50,7 @@ func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesRespo
 		}
 	}
 
-	if err := insertShares(ctx, s.db(ctx), toWrite); err != nil {
+	if err := insertShares(ctx, s.ch, toWrite); err != nil {
 		s.log.Error().Err(err).Int("rows", len(toWrite)).Msg("не удалось записать инструменты в sht")
 		return nil, status.Errorf(codes.Internal, "не удалось записать инструменты: %v", err)
 	}
@@ -61,7 +61,7 @@ func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesRespo
 		Int32("updated", updated).
 		Int32("unchanged", unchanged).
 		Msg("справочник инструментов обновлён")
-	return &chmgr.UpsertInstrumentsResponse{
+	return &instrpb.UpsertInstrumentsResponse{
 		Fetched:   int32(len(incoming)),
 		Inserted:  inserted,
 		Updated:   updated,
@@ -69,23 +69,23 @@ func (s *Server) UpsertInstruments(ctx context.Context, req *tinvest.SharesRespo
 	}, nil
 }
 
-func (s *Server) loadShares(ctx context.Context) (map[string]chpkg.InstrumentRow, error) {
-	var rows []chpkg.InstrumentRow
-	if err := s.db(ctx).Select(ctx, &rows, "SELECT "+clickhouse.ShtSelectColumns+" FROM TrB.sht FINAL"); err != nil {
+func (s *Server) loadShares(ctx context.Context) (map[string]instrpkg.InstrumentRow, error) {
+	var rows []instrpkg.InstrumentRow
+	if err := s.ch.Select(ctx, &rows, "SELECT "+chdb.ShtSelectColumns+" FROM TrB.sht FINAL"); err != nil {
 		return nil, err
 	}
-	out := make(map[string]chpkg.InstrumentRow, len(rows))
+	out := make(map[string]instrpkg.InstrumentRow, len(rows))
 	for i := range rows {
 		out[rows[i].UID] = rows[i]
 	}
 	return out, nil
 }
 
-func insertShares(ctx context.Context, conn driver.Conn, rows []chpkg.InstrumentRow) error {
+func insertShares(ctx context.Context, conn driver.Conn, rows []instrpkg.InstrumentRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	batch, err := conn.PrepareBatch(ctx, clickhouse.ShtInsertSQL)
+	batch, err := conn.PrepareBatch(ctx, chdb.ShtInsertSQL)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func insertShares(ctx context.Context, conn driver.Conn, rows []chpkg.Instrument
 	return batch.Send()
 }
 
-func appendShare(batch driver.Batch, row *chpkg.InstrumentRow) error {
+func appendShare(batch driver.Batch, row *instrpkg.InstrumentRow) error {
 	tests := row.RequiredTests
 	if tests == nil {
 		tests = []string{}
