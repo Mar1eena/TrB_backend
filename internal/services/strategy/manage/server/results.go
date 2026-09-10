@@ -47,7 +47,11 @@ func (s *Server) GetBacktestResult(ctx context.Context, req *strategypb.GetBackt
 		resp.Trades = trades
 	}
 	if req.GetIncludeIndicators() {
-		series, err := s.readIndicatorSeries(ctx, req.GetRunId())
+		maxPoints := int(req.GetEquityMaxPoints())
+		if maxPoints <= 0 {
+			maxPoints = defaultEquityMaxPoints
+		}
+		series, err := s.readIndicatorSeries(ctx, req.GetRunId(), maxPoints)
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
@@ -56,12 +60,37 @@ func (s *Server) GetBacktestResult(ctx context.Context, req *strategypb.GetBackt
 	return resp, nil
 }
 
-func (s *Server) readIndicatorSeries(ctx context.Context, runID string) ([]*strategypb.BacktestIndicatorSeries, error) {
+func (s *Server) readIndicatorSeries(ctx context.Context, runID string, maxPoints int) ([]*strategypb.BacktestIndicatorSeries, error) {
+	// Даунсэмплинг как в readEquity: каждый n-й бар в пределах одного ряда
+	// (indicator_id, output_key), если точек в самом длинном ряду больше лимита.
+	// Без этого мультигодовой бэктест на минутках отдаёт миллионы точек и
+	// материализация ответа выедает память процесса.
+	var longest uint64
+	if err := s.ch.QueryRow(ctx, `
+		SELECT max(cnt) FROM (
+			SELECT count() AS cnt
+			FROM TrB_strategy.indicator_series FINAL
+			WHERE run_id = ?
+			GROUP BY indicator_id, output_key
+		)`, runID).Scan(&longest); err != nil {
+		return nil, err
+	}
+	stride := 1
+	if maxPoints > 0 && int(longest) > maxPoints {
+		stride = (int(longest) + maxPoints - 1) / maxPoints
+	}
+
 	rows, err := s.ch.Query(ctx, `
 		SELECT indicator_id, indicator, output_key, overlay, time, value
-		FROM TrB_strategy.indicator_series FINAL
-		WHERE run_id = ?
-		ORDER BY indicator_id, output_key, time`, runID)
+		FROM (
+			SELECT
+				row_number() OVER (PARTITION BY indicator_id, output_key ORDER BY time) - 1 AS rn,
+				indicator_id, indicator, output_key, overlay, time, value
+			FROM TrB_strategy.indicator_series FINAL
+			WHERE run_id = ?
+		)
+		WHERE rn % ? = 0
+		ORDER BY indicator_id, output_key, time`, runID, stride)
 	if err != nil {
 		return nil, err
 	}
