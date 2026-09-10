@@ -113,46 +113,78 @@ func App() {
 	l.Info().Msg("сервис успешно остановлен")
 }
 
-// ensureStream идемпотентно создаёт WorkQueue-стрим strategy_tasks и два durable-консьюмера.
+// ensureStream идемпотентно создаёт WorkQueue-стримы strategy_tasks (бэктест + поиск)
+// и strategy_eval (fan-out оценки кандидатов) с их durable-консьюмерами.
 func ensureStream(js *trb_nats.Nats) error {
-	streamCfg := &nats.StreamConfig{
-		Name:        tasks.StreamStrategyTasks,
-		Description: "Задачи бэктеста и генетического поиска стратегий (proto BacktestTask/SearchTask).",
-		Subjects:    []string{tasks.SubjBacktestTasks, tasks.SubjSearchTasks},
-		Retention:   nats.WorkQueuePolicy,
-		Storage:     nats.FileStorage,
-		Discard:     nats.DiscardOld,
-		Duplicates:  2 * time.Minute,
-	}
-	if _, err := js.Jsc.AddStream(streamCfg); err != nil && !isExists(err) {
-		if _, uerr := js.Jsc.UpdateStream(streamCfg); uerr != nil {
-			return err
-		}
+	streams := []struct {
+		cfg       *nats.StreamConfig
+		consumers []*nats.ConsumerConfig
+	}{
+		{
+			cfg: &nats.StreamConfig{
+				Name:        tasks.StreamStrategyTasks,
+				Description: "Задачи бэктеста и генетического поиска стратегий (proto BacktestTask/SearchTask).",
+				Subjects:    []string{tasks.SubjBacktestTasks, tasks.SubjSearchTasks},
+				Retention:   nats.WorkQueuePolicy,
+				Storage:     nats.FileStorage,
+				Discard:     nats.DiscardOld,
+				Duplicates:  2 * time.Minute,
+			},
+			consumers: []*nats.ConsumerConfig{
+				{
+					Durable:       tasks.ConsumerBacktest,
+					FilterSubject: tasks.SubjBacktestTasks,
+					AckPolicy:     nats.AckExplicitPolicy,
+					MaxDeliver:    3,
+					MaxAckPending: 4,
+					AckWait:       15 * time.Minute,
+					DeliverPolicy: nats.DeliverAllPolicy,
+				},
+				{
+					Durable:       tasks.ConsumerSearch,
+					FilterSubject: tasks.SubjSearchTasks,
+					AckPolicy:     nats.AckExplicitPolicy,
+					MaxDeliver:    2,
+					MaxAckPending: 1,
+					AckWait:       30 * time.Minute,
+					DeliverPolicy: nats.DeliverAllPolicy,
+				},
+			},
+		},
+		{
+			cfg: &nats.StreamConfig{
+				Name:        tasks.StreamStrategyEval,
+				Description: "Оценка одного кандидата генетического поиска (proto EvalTask). Ответы — core-NATS.",
+				Subjects:    []string{tasks.SubjEvalTasks},
+				Retention:   nats.WorkQueuePolicy,
+				Storage:     nats.FileStorage,
+				Discard:     nats.DiscardOld,
+				Duplicates:  5 * time.Minute,
+			},
+			consumers: []*nats.ConsumerConfig{
+				{
+					Durable:       tasks.ConsumerEvalWorker,
+					FilterSubject: tasks.SubjEvalTasks,
+					AckPolicy:     nats.AckExplicitPolicy,
+					MaxDeliver:    3,
+					MaxAckPending: 256, // shared всеми репликами strategy-eval-worker
+					AckWait:       5 * time.Minute,
+					DeliverPolicy: nats.DeliverAllPolicy,
+				},
+			},
+		},
 	}
 
-	consumers := []*nats.ConsumerConfig{
-		{
-			Durable:       tasks.ConsumerBacktest,
-			FilterSubject: tasks.SubjBacktestTasks,
-			AckPolicy:     nats.AckExplicitPolicy,
-			MaxDeliver:    3,
-			MaxAckPending: 4,
-			AckWait:       15 * time.Minute,
-			DeliverPolicy: nats.DeliverAllPolicy,
-		},
-		{
-			Durable:       tasks.ConsumerSearch,
-			FilterSubject: tasks.SubjSearchTasks,
-			AckPolicy:     nats.AckExplicitPolicy,
-			MaxDeliver:    2,
-			MaxAckPending: 1,
-			AckWait:       30 * time.Minute,
-			DeliverPolicy: nats.DeliverAllPolicy,
-		},
-	}
-	for _, c := range consumers {
-		if _, err := js.Jsc.AddConsumer(tasks.StreamStrategyTasks, c); err != nil && !isExists(err) {
-			return err
+	for _, s := range streams {
+		if _, err := js.Jsc.AddStream(s.cfg); err != nil && !isExists(err) {
+			if _, uerr := js.Jsc.UpdateStream(s.cfg); uerr != nil {
+				return err
+			}
+		}
+		for _, c := range s.consumers {
+			if _, err := js.Jsc.AddConsumer(s.cfg.Name, c); err != nil && !isExists(err) {
+				return err
+			}
 		}
 	}
 	return nil

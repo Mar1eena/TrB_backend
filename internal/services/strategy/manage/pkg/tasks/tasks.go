@@ -15,6 +15,14 @@ const (
 
 	ConsumerBacktest = "strategy_backtest_engine"
 	ConsumerSearch   = "strategy_search_engine"
+
+	// Fan-out оценки кандидатов генетического поиска: координатор
+	// (strategy-engine) публикует EvalTask, пул stateless-воркеров разбирает.
+	// Ответы (EvalResult) идут по core-NATS на SubjEvalResultsPrefix+<search_id>.
+	StreamStrategyEval    = "strategy_eval"
+	SubjEvalTasks         = "TrB.strategy.eval.tasks"
+	SubjEvalResultsPrefix = "TrB.strategy.eval.results."
+	ConsumerEvalWorker    = "strategy_eval_worker"
 )
 
 // PublishBacktest кладёт BacktestTask{run_id} в стрим (MsgId=run_id для дедупа).

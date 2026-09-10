@@ -15,14 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm ta-lib_0.6.4_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
-COPY internal/services/strategy/engine/requirements.txt /tmp/requirements.txt
+COPY internal/services/strategy/eval-worker/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Слой сбрасывается, когда на PyPI выходит новая версия trb-proto.
 ADD https://pypi.org/pypi/trb-proto/json /tmp/trb-proto.json
 RUN pip install --no-cache-dir --upgrade trb-proto && rm -f /tmp/trb-proto.json
 
-COPY internal/services/strategy/engine/ /app/
+# _common раскладывается в тот же /app плоско — импорты остаются без префикса.
+COPY internal/services/strategy/_common/ /app/
+COPY internal/services/strategy/eval-worker/ /app/
+RUN rm -rf /app/tests
 
 # HTTP /metrics, /healthz, /readyz (STRATEGY_METRICS_ADDR, по умолчанию :9106)
 EXPOSE 9106

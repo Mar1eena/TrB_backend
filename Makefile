@@ -14,10 +14,12 @@ cmd_indicators_calculation = ./internal/services/indicators/calculation/main.py
 indicators_dockerfile = ./build/docker/services/indicators/Dockerfile
 cmd_strategy_manage = ./internal/services/strategy/manage/cmd/main.go
 cmd_strategy_engine = ./internal/services/strategy/engine/main.py
-strategy_dockerfile = ./build/docker/services/strategy/Dockerfile
+cmd_strategy_eval_worker = ./internal/services/strategy/eval-worker/main.py
+strategy_engine_dockerfile = ./build/docker/services/strategy/engine.Dockerfile
+strategy_eval_worker_dockerfile = ./build/docker/services/strategy/eval-worker.Dockerfile
 TRB_PROTO_REF ?= main
 
-.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db instruments services gene invest ver indicators indicators-manage indicators-calculation indicators-docker indicators-manage-docker indicators-calculation-docker strategy strategy-manage strategy-engine strategy-docker strategy-manage-docker strategy-engine-docker
+.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db instruments services gene invest ver indicators indicators-manage indicators-calculation indicators-docker indicators-manage-docker indicators-calculation-docker strategy strategy-manage strategy-engine strategy-eval-worker strategy-docker strategy-manage-docker strategy-engine-docker strategy-eval-worker-docker
 
 up:
 	docker-compose --project-name=${name} up -d
@@ -83,13 +85,19 @@ strategy-manage:
 strategy-engine:
 	python ${cmd_strategy_engine}
 
-strategy-docker: strategy-manage-docker strategy-engine-docker
+strategy-eval-worker:
+	python ${cmd_strategy_eval_worker}
+
+strategy-docker: strategy-manage-docker strategy-engine-docker strategy-eval-worker-docker
 
 strategy-manage-docker:
 	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_strategy_manage} -t strategy-manage:latest
 
 strategy-engine-docker:
-	docker build -f ${strategy_dockerfile} . -t strategy-engine:latest
+	docker build -f ${strategy_engine_dockerfile} . -t strategy-engine:latest
+
+strategy-eval-worker-docker:
+	docker build -f ${strategy_eval_worker_dockerfile} . -t strategy-eval-worker:latest
 
 ver:
 	go get github.com/Mar1eena/trb_proto@latest

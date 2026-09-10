@@ -112,6 +112,20 @@ CREATE TABLE IF NOT EXISTS search_candidate (
 );
 CREATE INDEX IF NOT EXISTS search_candidate_score_idx ON search_candidate (search_run_id, score DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS search_candidate_dedup_idx ON search_candidate (search_run_id, spec_hash);
+
+-- Глобальный кэш оценок кандидатов: (spec_hash + инструмент + период + fidelity +
+-- параметры брокера + версия движка) -> метрики. Переиспользуется между поисками
+-- и между рестартами движка. GC по created_at (STRATEGY_EVAL_CACHE_TTL_DAYS).
+CREATE TABLE IF NOT EXISTS search_eval_cache (
+    eval_key       text        PRIMARY KEY,
+    spec_hash      bigint      NOT NULL,
+    metrics        jsonb       NOT NULL,
+    data_fraction  double precision NOT NULL DEFAULT 1.0,
+    engine_version text        NOT NULL DEFAULT '',
+    hits           integer     NOT NULL DEFAULT 0,
+    created_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS search_eval_cache_gc_idx ON search_eval_cache (created_at);
 `
 
 // EnsureStrategySchema создаёт таблицы домена стратегий, если их ещё нет.

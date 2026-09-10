@@ -36,6 +36,17 @@ func (s *Server) SubmitSearch(ctx context.Context, req *strategypb.SubmitSearchR
 	if budget.GetSeed() == 0 {
 		budget.Seed = rand.Uint64()
 	}
+	if budget.GetHalvingEta() > 8 {
+		return nil, status.Error(codes.InvalidArgument, "budget.halving_eta: не больше 8")
+	}
+	if budget.GetHalvingEta() >= 2 {
+		f := budget.GetLowFidelityFrac()
+		if f <= 0 {
+			budget.LowFidelityFrac = 0.5
+		} else if f >= 1 {
+			return nil, status.Error(codes.InvalidArgument, "budget.low_fidelity_frac: ожидается доля в (0, 1)")
+		}
+	}
 	for i, pr := range req.GetSearchSpace() {
 		if pr.GetPath() == "" {
 			return nil, status.Errorf(codes.InvalidArgument, "search_space.%d.path пустой", i)

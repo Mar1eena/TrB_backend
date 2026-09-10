@@ -181,22 +181,86 @@ def search_is_canceled(search_id: str) -> bool:
     return bool(row) and row[0] == "canceled"
 
 
-def insert_search_candidate(
-    *, search_run_id: str, spec_json: str, spec_hash: int, params_json: str,
-    backtest_run_id: str | None, score: float, metrics: dict[str, float],
-    generation: int, status: str = "evaluated",
-) -> str:
+def insert_search_candidates(rows: list[dict[str, Any]]) -> None:
+    """Батч-вставка кандидатов одного поколения.
+
+    Каждая строка: {id, search_run_id, spec_json, spec_hash, params, score,
+    metrics, generation, status}. id генерится клиентом (uuid), чтобы знать его
+    для search_evals в ClickHouse без RETURNING. Дубликаты по (search_run_id,
+    spec_hash) игнорируются.
+    """
+    if not rows:
+        return
+    params = [
+        (
+            r["id"], r["search_run_id"], r["spec_json"], r["spec_hash"],
+            json_dumps(r.get("params") or {}), r["score"],
+            json_dumps(r.get("metrics") or {}), r["generation"], r["status"],
+        )
+        for r in rows
+    ]
     with _conn() as c:
-        row = c.execute(
+        c.cursor().executemany(
             """INSERT INTO search_candidate
-                 (search_run_id, spec, spec_hash, params, backtest_run_id, score, metrics, generation, status)
+                 (id, search_run_id, spec, spec_hash, params, score, metrics, generation, status)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-               ON CONFLICT (search_run_id, spec_hash) DO NOTHING
-               RETURNING id""",
-            (search_run_id, spec_json, spec_hash, params_json, backtest_run_id,
-             score, json_dumps(metrics), generation, status),
-        ).fetchone()
-    return str(row[0]) if row else ""
+               ON CONFLICT (search_run_id, spec_hash) DO NOTHING""",
+            params,
+        )
+
+
+# --- глобальный кэш оценок (search_eval_cache) ---
+
+
+def get_eval_cache(keys: list[str]) -> dict[str, dict[str, float]]:
+    """eval_key -> metrics для найденных ключей."""
+    if not keys:
+        return {}
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT eval_key, metrics FROM search_eval_cache WHERE eval_key = ANY(%s)",
+            (list(keys),),
+        ).fetchall()
+    out: dict[str, dict[str, float]] = {}
+    for key, metrics in rows:
+        if isinstance(metrics, str):
+            import json as _json
+
+            metrics = _json.loads(metrics)
+        out[key] = {k: float(v) for k, v in (metrics or {}).items()}
+    return out
+
+
+def upsert_eval_cache(rows: list[dict[str, Any]]) -> None:
+    """Батч-запись в кэш. Строка: {eval_key, spec_hash, data_fraction, metrics, engine_version}."""
+    if not rows:
+        return
+    params = [
+        (r["eval_key"], r["spec_hash"], r.get("data_fraction", 1.0),
+         json_dumps(r.get("metrics") or {}), r.get("engine_version", ""))
+        for r in rows
+    ]
+    with _conn() as c:
+        c.cursor().executemany(
+            """INSERT INTO search_eval_cache
+                 (eval_key, spec_hash, data_fraction, metrics, engine_version, hits)
+               VALUES (%s,%s,%s,%s,%s,0)
+               ON CONFLICT (eval_key)
+               DO UPDATE SET hits = search_eval_cache.hits + 1""",
+            params,
+        )
+
+
+def gc_eval_cache(ttl_days: int) -> int:
+    """Удаляет строки старше ttl_days. 0/отрицательное => no-op. Возвращает число удалённых."""
+    if ttl_days <= 0:
+        return 0
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM search_eval_cache WHERE created_at < now() - make_interval(days => %s)",
+            (int(ttl_days),),
+        )
+        return cur.rowcount or 0
 
 
 def rank_search_candidates(search_id: str) -> None:

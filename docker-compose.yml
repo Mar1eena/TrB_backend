@@ -267,17 +267,30 @@ services:
         reservations:
           memory: 64M
 
+  # Координатор: single-бэктесты (TrB.strategy.backtest.tasks) + оркестрация
+  # генетического поиска (TrB.strategy.search.tasks). Оценку кандидатов поиска
+  # целиком раздаёт пулу strategy-eval-worker (STRATEGY_EVAL_MODE=distributed;
+  # если пул недоступен — деградирует в локальный ProcessPoolExecutor).
+  # Код: internal/services/strategy/{engine,_common}/
   strategy-engine:
     <<: [*services-config]
     container_name: trb-strategy-engine
     image: strategy-engine:latest
     build:
       context: .
-      dockerfile: ./build/docker/services/strategy/Dockerfile
+      dockerfile: ./build/docker/services/strategy/engine.Dockerfile
     command: ["python", "/app/main.py"]
+    # TEMP: локальный proto до релиза trb-proto с EvalTask/EvalResult
+    # (зеркалит `replace` в go.mod). Убрать вместе с replace после публикации.
+    volumes:
+      - ../TrB_proto/gen/python:/opt/trbproto:ro
     environment:
       - APP_RUNTIME=docker
+      - PYTHONPATH=/app:/opt/trbproto
       - STRATEGY_METRICS_ADDR=:9106
+      - STRATEGY_EVAL_MODE=distributed
+      - STRATEGY_EVAL_TASK_TIMEOUT_SEC
+      - STRATEGY_EVAL_CACHE_TTL_DAYS
       - STRATEGY_PG_POOL
       - STRATEGY_ENGINE_VERSION
       - STRATEGY_INDICATOR_SOURCE
@@ -311,7 +324,55 @@ services:
     deploy:
       resources:
         limits:
-          memory: 6072M
+          memory: 3072M
+        reservations:
+          memory: 256M
+
+  # Пул stateless-воркеров: вся тяжёлая оценка кандидатов генетического поиска.
+  # Отдельный сервис и образ (Dockerfile eval-worker), свой код
+  # internal/services/strategy/{eval-worker,_common}/. PG не нужен (кэш пишет
+  # координатор), indicators-manage не нужен.
+  # Масштабировать: docker compose up -d --scale strategy-eval-worker=8
+  strategy-eval-worker:
+    <<: [*services-config]
+    image: strategy-eval-worker:latest
+    build:
+      context: .
+      dockerfile: ./build/docker/services/strategy/eval-worker.Dockerfile
+    command: ["python", "/app/main.py"]
+    volumes:
+      - ../TrB_proto/gen/python:/opt/trbproto:ro
+    environment:
+      - APP_RUNTIME=docker
+      - PYTHONPATH=/app:/opt/trbproto
+      - STRATEGY_METRICS_ADDR=:9106
+      - STRATEGY_EVAL_WORKER_CONCURRENCY
+      - STRATEGY_EVAL_TASK_TIMEOUT_SEC
+      - STRATEGY_CANDLE_CACHE_SIZE
+      - STRATEGY_ENGINE_VERSION
+      - NATS_URL
+      - NATS_URL_DOCKER
+      - CLICKHOUSE_URL
+      - CLICKHOUSE_URL_DOCKER
+      - CLICKHOUSE_DATABASE
+      - CLICKHOUSE_USER
+      - CLICKHOUSE_USERNAME
+      - CLICKHOUSE_PASSWORD
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9106/healthz').status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - clickhouse-db
+      - nats-server
+      - strategy-manage
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 3072M
         reservations:
           memory: 256M
 
