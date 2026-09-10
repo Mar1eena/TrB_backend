@@ -41,16 +41,18 @@ class SearchError(TransientError):
     """Выборка свечей/транзиентная ошибка — NAK с ретраем."""
 
 
-# --- воркеры локального ProcessPoolExecutor (фолбэк) ---
+# --- воркеры локального ProcessPoolExecutor (фолбэк, если пул недоступен) ---
 
 _WORKER_DF: pd.DataFrame | None = None
 _WORKER_CONFIG: Any = None
 
 
-def _worker_init(df_records: list, index: list, columns: list, config_json: str) -> None:
+def _worker_init(df: pd.DataFrame, config) -> None:
+    # df/config передаются как есть — pickle DataFrame эффективнее, чем список
+    # списков + пересборка (старый to_numpy().tolist() раздувал память кратно).
     global _WORKER_DF, _WORKER_CONFIG
-    _WORKER_DF = pd.DataFrame(df_records, columns=columns, index=pd.to_datetime(index, utc=True))
-    _WORKER_CONFIG = specload.parse_config(config_json)
+    _WORKER_DF = df
+    _WORKER_CONFIG = config
 
 
 def _evaluate(spec_json: str, data_fraction: float = 1.0) -> dict[str, float]:
@@ -59,7 +61,7 @@ def _evaluate(spec_json: str, data_fraction: float = 1.0) -> dict[str, float]:
     if df is not None and 0.0 < data_fraction < 1.0:
         df = df.iloc[: int(len(df) * data_fraction)]
     try:
-        result = run_backtest_inproc(spec, df, _WORKER_CONFIG)
+        result = run_backtest_inproc(spec, df, _WORKER_CONFIG, lean=True)
         return result["metrics"]
     except specload.SpecError:
         return {}
@@ -134,13 +136,9 @@ class _Evaluator:
 
     def _local_pool(self) -> ProcessPoolExecutor:
         if self._pool is None:
-            df_records = self.df.to_numpy().tolist()
-            df_index = [t.isoformat() for t in self.df.index]
-            df_cols = list(self.df.columns)
-            config_json = pg.json_dumps(_config_dict(self.config))
             self._pool = ProcessPoolExecutor(
                 max_workers=self._pool_concurrency, initializer=_worker_init,
-                initargs=(df_records, df_index, df_cols, config_json),
+                initargs=(self.df, self.config), max_tasks_per_child=50,
             )
         return self._pool
 
@@ -416,9 +414,3 @@ def _base_spec(row: dict):
         if raw is not None:
             return specload.parse_spec(raw)
     return specload.parse_spec(row.get("base_spec"))
-
-
-def _config_dict(config) -> dict:
-    from google.protobuf import json_format
-
-    return json_format.MessageToDict(config, preserving_proto_field_name=True)

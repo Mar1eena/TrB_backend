@@ -2,11 +2,13 @@
 
 Stateless: масштабируется числом реплик (docker compose up --scale
 strategy-eval-worker=N). Внутри реплики — ProcessPoolExecutor для параллелизма по
-ядрам; каждый дочерний процесс держит свой ClickHouse-клиент и LRU-кэш свечей.
+ядрам; дочерние процессы перезапускаются каждые STRATEGY_EVAL_MAX_TASKS_PER_CHILD
+задач (backtrader копит память между прогонами).
 """
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 from collections import OrderedDict
@@ -21,13 +23,47 @@ from specmod import load as specload
 
 log = logging.getLogger(__name__)
 
+# Бюджет памяти на один дочерний процесс при авто-выборе параллелизма.
+_MEM_PER_CHILD_BYTES = 1_200_000_000
+
+
+def _int_env(name: str, default: int, *, lo: int = 1, hi: int = 10**9) -> int:
+    raw = os.environ.get(name)
+    try:
+        return max(lo, min(hi, int(raw))) if raw else default
+    except ValueError:
+        return default
+
+
+def _cgroup_mem_limit() -> int:
+    """Лимит памяти контейнера в байтах (cgroup v2/v1); 0 — не определён/безлимит."""
+    for path in ("/sys/fs/cgroup/memory.max",
+                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = open(path).read().strip()  # noqa: SIM115
+        except OSError:
+            continue
+        if raw.isdigit():
+            v = int(raw)
+            # cgroup отдаёт огромное «максимальное» число вместо «безлимита»
+            if 0 < v < (1 << 62):
+                return v
+    return 0
+
 
 def worker_concurrency() -> int:
     raw = os.environ.get("STRATEGY_EVAL_WORKER_CONCURRENCY")
-    try:
-        n = int(raw) if raw else min(os.cpu_count() or 2, 8)
-    except ValueError:
-        n = min(os.cpu_count() or 2, 8)
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    cpu = os.cpu_count() or 2
+    mem = _cgroup_mem_limit()
+    by_mem = max(1, mem // _MEM_PER_CHILD_BYTES) if mem else cpu
+    n = min(cpu, by_mem, 8)
+    log.info("eval-worker: авто-параллелизм %d (cpu=%d, mem_limit=%s)",
+             n, cpu, f"{mem // (1 << 20)}MiB" if mem else "n/a")
     return max(1, n)
 
 
@@ -39,19 +75,20 @@ def task_timeout_sec() -> float:
         return 120.0
 
 
+def max_tasks_per_child() -> int:
+    return _int_env("STRATEGY_EVAL_MAX_TASKS_PER_CHILD", 40, lo=1, hi=10000)
+
+
 def _candle_cache_size() -> int:
-    raw = os.environ.get("STRATEGY_CANDLE_CACHE_SIZE")
-    try:
-        return max(1, int(raw)) if raw else 4
-    except ValueError:
-        return 4
+    return _int_env("STRATEGY_CANDLE_CACHE_SIZE", 1, lo=1, hi=32)
 
 
 # --- состояние дочернего процесса пула ---
 
 _CH: Any = None
 _CANDLES: "OrderedDict[tuple, Any]" = OrderedDict()
-_CACHE_MAX = 4
+_CACHE_MAX = 1
+_EVALS = 0
 
 
 def _child_init() -> None:
@@ -84,6 +121,7 @@ def _candles(uid: str, interval: int, start, end):
 
 
 def _child_evaluate(spec_bytes: bytes, config_bytes: bytes, data_fraction: float) -> dict[str, float]:
+    global _EVALS
     spec = spec_pb2.StrategySpec()
     spec.ParseFromString(spec_bytes)
     # как specload.parse_spec: пустая стратегия — не кандидат
@@ -98,17 +136,21 @@ def _child_evaluate(spec_bytes: bytes, config_bytes: bytes, data_fraction: float
     if df is None or df.empty:
         return {}
     if 0.0 < data_fraction < 1.0:
-        cut = int(len(df) * data_fraction)
-        df = df.iloc[:cut]
+        df = df.iloc[: int(len(df) * data_fraction)]
 
     try:
-        result = run_backtest_inproc(spec, df, config)
-        return result["metrics"]
+        result = run_backtest_inproc(spec, df, config, lean=True)
+        return dict(result["metrics"])
     except specload.SpecError:
         return {}
     except Exception as exc:  # noqa: BLE001
         log.debug("кандидат упал: %s", exc)
         return {}
+    finally:
+        del df, spec, config
+        _EVALS += 1
+        if _EVALS % 5 == 0:
+            gc.collect()
 
 
 # --- пул уровня процесса-воркера ---
@@ -120,8 +162,9 @@ def init_pool() -> None:
     global _POOL
     if _POOL is None:
         n = worker_concurrency()
-        _POOL = ProcessPoolExecutor(max_workers=n, initializer=_child_init)
-        log.info("eval-worker: пул на %d процессов", n)
+        mtc = max_tasks_per_child()
+        _POOL = ProcessPoolExecutor(max_workers=n, initializer=_child_init, max_tasks_per_child=mtc)
+        log.info("eval-worker: пул на %d процессов, перезапуск процесса каждые %d задач", n, mtc)
 
 
 def shutdown_pool() -> None:

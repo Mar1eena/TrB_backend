@@ -47,6 +47,7 @@ async def _run() -> None:
             return False
 
     metrics.serve(metrics_addr, ready=_ready)
+    metrics.start_rss_sampler()
 
     import nats
 

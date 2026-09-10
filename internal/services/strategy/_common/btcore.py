@@ -33,13 +33,16 @@ ENGINE_VERSION = os.environ.get("STRATEGY_ENGINE_VERSION") or _default_version()
 
 
 def run_backtest_inproc(
-    spec, df: pd.DataFrame, config, precomputed: dict | None = None, *, with_indicators: bool = False
+    spec, df: pd.DataFrame, config, precomputed: dict | None = None, *,
+    with_indicators: bool = False, lean: bool = False,
 ) -> dict[str, Any]:
     """Чистый прогон: без PG/CH/NATS. Возвращает {'metrics','equity','trades'[,'indicators']}.
 
     precomputed: {IndicatorRef.id: np.ndarray выровненный по барам df} — значения
     индикаторов из общего пайплайна (ClickHouse). Отсутствующие считаются в движке.
     with_indicators: дополнительно вернуть ряды индикаторов, выровненные по барам.
+    lean: только метрики (без кривой капитала и списка сделок) — для генетического
+    поиска, экономит сотни МБ на длинных сериях. Несовместимо с with_indicators.
     """
     if df.empty:
         raise specload.SpecError("нет свечей в диапазоне")
@@ -47,18 +50,21 @@ def run_backtest_inproc(
         raise specload.SpecError("недостаточно баров для warmup")
 
     try:
-        return _cerebro_once(spec, df, config, precomputed, runonce=True, with_indicators=with_indicators)
+        return _cerebro_once(spec, df, config, precomputed, runonce=True,
+                             with_indicators=with_indicators, lean=lean)
     except specload.SpecError:
         raise
     except Exception as exc:  # noqa: BLE001
         # Векторный режим (runonce=True) на порядок быстрее, но редкий индикатор
         # может его не поддержать — тогда откатываемся в побаровый режим.
         log.warning("runonce=True не сработал (%s) — повтор в побаровом режиме", exc)
-        return _cerebro_once(spec, df, config, precomputed, runonce=False, with_indicators=with_indicators)
+        return _cerebro_once(spec, df, config, precomputed, runonce=False,
+                             with_indicators=with_indicators, lean=lean)
 
 
 def _cerebro_once(
-    spec, df: pd.DataFrame, config, precomputed: dict | None, *, runonce: bool, with_indicators: bool = False
+    spec, df: pd.DataFrame, config, precomputed: dict | None, *, runonce: bool,
+    with_indicators: bool = False, lean: bool = False,
 ) -> dict[str, Any]:
     cerebro = bt.Cerebro(stdstats=False, runonce=runonce)
     cerebro.adddata(bt.feeds.PandasData(dataname=df))
@@ -73,11 +79,11 @@ def _cerebro_once(
 
     strat_cls = build_strategy_class(spec, long_only=config.long_only, precomputed=precomputed)
     cerebro.addstrategy(strat_cls)
-    an.attach(cerebro)
+    an.attach(cerebro, lean=lean)
 
     results = cerebro.run()
     strat = results[0]
-    result = an.extract(strat, cash)
+    result = an.extract(strat, cash, lean=lean)
     if with_indicators:
         result["indicators"] = an.extract_indicator_series(strat, spec, df)
     return result

@@ -114,9 +114,37 @@ class TradeRecorder(bt.Analyzer):
         return {"trades": self.trades}
 
 
-def attach(cerebro: bt.Cerebro) -> None:
-    cerebro.addanalyzer(EquityRecorder, _name="equity")
-    cerebro.addanalyzer(TradeRecorder, _name="trades")
+class LeanEquity(bt.Analyzer):
+    """Только скаляры капитала — без списка точек по барам.
+
+    Для генетического поиска нужны лишь метрики; полная кривая (EquityRecorder)
+    держит по dict на каждый бар и на длинных сериях съедает сотни МБ.
+    """
+
+    def start(self) -> None:
+        self._peak = None
+        self.final = None
+        self.bars = 0
+        self.in_market = 0
+
+    def next(self) -> None:
+        value = self.strategy.broker.getvalue()
+        self._peak = value if self._peak is None else max(self._peak, value)
+        self.final = value
+        self.bars += 1
+        if abs(value - self.strategy.broker.getcash()) > 1e-9:
+            self.in_market += 1
+
+    def get_analysis(self) -> dict:
+        return {"final": self.final, "bars": self.bars, "in_market": self.in_market}
+
+
+def attach(cerebro: bt.Cerebro, *, lean: bool = False) -> None:
+    if lean:
+        cerebro.addanalyzer(LeanEquity, _name="lean")
+    else:
+        cerebro.addanalyzer(EquityRecorder, _name="equity")
+        cerebro.addanalyzer(TradeRecorder, _name="trades")
     cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", timeframe=bt.TimeFrame.Days, riskfreerate=0.0)
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name="dd")
@@ -125,10 +153,8 @@ def attach(cerebro: bt.Cerebro) -> None:
     cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="timereturn", timeframe=bt.TimeFrame.Days)
 
 
-def extract(strat: bt.Strategy, initial_cash: float) -> dict[str, Any]:
+def extract(strat: bt.Strategy, initial_cash: float, *, lean: bool = False) -> dict[str, Any]:
     an = strat.analyzers
-    eq = an.equity.get_analysis().get("points", [])
-    trades = an.trades.get_analysis().get("trades", [])
 
     ta = an.ta.get_analysis()
     total = _dig(ta, "total", "total", default=0) or 0
@@ -144,9 +170,19 @@ def extract(strat: bt.Strategy, initial_cash: float) -> dict[str, Any]:
     tr_series = list(an.timereturn.get_analysis().values())
     sortino = _sortino(tr_series)
 
-    final_equity = eq[-1]["equity"] if eq else initial_cash
-    bars = len(eq)
-    in_market = sum(1 for p in eq if abs(p["position_value"]) > 1e-9)
+    if lean:
+        le = an.lean.get_analysis()
+        eq: list = []
+        trades: list = []
+        final_equity = le.get("final") or initial_cash
+        bars = le.get("bars", 0)
+        in_market = le.get("in_market", 0)
+    else:
+        eq = an.equity.get_analysis().get("points", [])
+        trades = an.trades.get_analysis().get("trades", [])
+        final_equity = eq[-1]["equity"] if eq else initial_cash
+        bars = len(eq)
+        in_market = sum(1 for p in eq if abs(p["position_value"]) > 1e-9)
 
     dd = an.dd.get_analysis()
     max_dd = (_dig(dd, "max", "drawdown", default=0.0) or 0.0) / 100.0

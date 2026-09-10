@@ -346,9 +346,13 @@ services:
       - APP_RUNTIME=docker
       - PYTHONPATH=/app:/opt/trbproto
       - STRATEGY_METRICS_ADDR=:9106
-      - STRATEGY_EVAL_WORKER_CONCURRENCY
+      # Память: ~1–1.5 ГБ пик на процесс на длинных сериях. По умолчанию
+      # параллелизм подбирается из cgroup-лимита (mem_limit / 1.2ГБ, но не больше
+      # ядер и 8). Задайте число явно, если хотите иначе.
+      - STRATEGY_EVAL_WORKER_CONCURRENCY=2
+      - STRATEGY_EVAL_MAX_TASKS_PER_CHILD    # перезапуск процесса каждые N задач (деф. 40)
       - STRATEGY_EVAL_TASK_TIMEOUT_SEC
-      - STRATEGY_CANDLE_CACHE_SIZE
+      - STRATEGY_CANDLE_CACHE_SIZE           # деф. 1 (один набор свечей на процесс)
       - STRATEGY_ENGINE_VERSION
       - NATS_URL
       - NATS_URL_DOCKER
@@ -369,7 +373,7 @@ services:
       - nats-server
       - strategy-manage
     deploy:
-      replicas: 2
+      replicas: 4
       resources:
         limits:
           memory: 3072M

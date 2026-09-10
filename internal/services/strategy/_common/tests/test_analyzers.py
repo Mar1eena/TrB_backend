@@ -21,7 +21,7 @@ from specmod import analyzers as an  # noqa: E402
 from specmod.interpreter import build_strategy_class  # noqa: E402
 
 
-def _run():
+def _run(lean: bool = False):
     n = 260
     idx = pd.date_range("2023-01-01", periods=n, freq="D", tz="UTC")
     t = np.arange(n)
@@ -50,8 +50,8 @@ def _run():
     c.adddata(bt.feeds.PandasData(dataname=df))
     c.broker.setcash(100000)
     c.addstrategy(cls)
-    an.attach(c)
-    return an.extract(c.run()[0], 100000)
+    an.attach(c, lean=lean)
+    return an.extract(c.run()[0], 100000, lean=lean)
 
 
 def test_trades_have_distinct_prices_and_sane_pnl_pct():
@@ -72,6 +72,17 @@ def test_precomputed_indicator_line_used():
     # здесь просто проверяем, что прогон отработал и дал сделки по osc-сигналу
     out = _run()
     assert out["metrics"]["trades_count"] >= 2
+
+
+def test_lean_extract_matches_core_metrics():
+    """lean-режим (без EquityRecorder/TradeRecorder) даёт те же ключевые метрики."""
+    full = _run(lean=False)["metrics"]
+    lean = _run(lean=True)["metrics"]
+    for k in ("trades_count", "max_drawdown", "sharpe", "cagr", "sqn", "expectancy"):
+        assert lean[k] == pytest.approx(full[k], rel=1e-6, abs=1e-9), k
+    assert 0.0 <= lean["exposure"] <= 1.0
+    assert lean["final_equity"] > 0
+    assert _run(lean=True).get("equity") == [] and _run(lean=True).get("trades") == []
 
 
 def test_extract_indicator_series_aligned_to_bars():

@@ -100,6 +100,34 @@ def record_unmatched_params(n: int) -> None:
         METRICS.inc("params_unmatched_total", float(n))
 
 
+def _self_rss_bytes() -> int:
+    try:
+        for line in open("/proc/self/status"):  # noqa: SIM115
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    try:
+        import resource
+
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def start_rss_sampler(interval_sec: float = 15.0) -> None:
+    """Фоновый поток: пишет gauge process_rss_bytes (диагностика памяти воркеров)."""
+
+    def _loop() -> None:
+        while True:
+            rss = _self_rss_bytes()
+            if rss:
+                METRICS.set_gauge("process_rss_bytes", float(rss))
+            time.sleep(interval_sec)
+
+    threading.Thread(target=_loop, name="rss-sampler", daemon=True).start()
+
+
 ReadyFn = Callable[[], bool]
 
 

@@ -54,7 +54,11 @@ Python-сервис на **backtrader**: слушает NATS JetStream и вып
      JetStream, пул воркеров считает и отвечает `EvalResult`; не ответившие →
      `score=-inf`, один ретрай.
   3. если воркеров нет (`STRATEGY_EVAL_MODE=auto`, проба пуста) или пул молчит →
-     локальный `ProcessPoolExecutor` (`budget.concurrency`), свечи грузятся один раз.
+     локальный `ProcessPoolExecutor` (`budget.concurrency`), свечи грузятся один
+     раз и передаются в пул как есть (не копия-список), процесс перезапускается
+     каждые 50 задач.
+  Оценка идёт в lean-режиме (`btcore.run_backtest_inproc(lean=True)`) — только
+  метрики, без кривой капитала и списка сделок: экономит память на длинных сериях.
 - **Successive halving** (`budget.halving_eta >= 2`): нижняя ступень — вся популяция
   на префиксе периода (`low_fidelity_frac`, деф. 0.5), топ `1/eta` → полный период;
   проигравшие → `status='pruned'`. `evaluated` считает каждый бэктест обеих ступеней.
