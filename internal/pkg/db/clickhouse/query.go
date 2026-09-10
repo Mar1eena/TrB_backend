@@ -64,6 +64,49 @@ func VersionIsZero(t time.Time) bool {
 	return t.IsZero() || t.Year() < 1971
 }
 
+// SortClause строит "ORDER BY <col> ASC|DESC" только по whitelisted-колонкам.
+// whitelist: ключ (sort_by из proto) -> выражение колонки в SQL. def — выражение по умолчанию
+// (например "ticker" или "last_start DESC" без ключевого слова ORDER BY).
+func SortClause(sortBy string, whitelist map[string]string, def string, desc bool) string {
+	col := def
+	if expr, ok := whitelist[strings.TrimSpace(sortBy)]; ok && expr != "" {
+		col = expr
+	}
+	dir := "ASC"
+	if desc {
+		dir = "DESC"
+	}
+	return "ORDER BY " + col + " " + dir
+}
+
+// FieldFilterInput — пара field/value (сервис разворачивает свой proto-тип FieldFilter).
+type FieldFilterInput struct {
+	Field string
+	Value string
+}
+
+// FieldFiltersClause добавляет AND-условия positionCaseInsensitiveUTF8(<col>, $N) > 0
+// для каждого whitelisted-поля с непустым значением. startArg — следующий номер $N.
+// whitelist: имя поля из proto -> выражение колонки в SQL.
+func FieldFiltersClause(filters []FieldFilterInput, whitelist map[string]string, startArg int) (clause string, args []any, nextArg int) {
+	nextArg = startArg
+	parts := make([]string, 0, len(filters))
+	for _, f := range filters {
+		expr, ok := whitelist[strings.TrimSpace(f.Field)]
+		v := strings.TrimSpace(f.Value)
+		if !ok || expr == "" || v == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("positionCaseInsensitiveUTF8(%s, $%d) > 0", expr, nextArg))
+		args = append(args, v)
+		nextArg++
+	}
+	if len(parts) == 0 {
+		return "true", nil, startArg
+	}
+	return "(" + strings.Join(parts, " AND ") + ")", args, nextArg
+}
+
 // SearchClause добавляет фильтр по ticker/name/uid/figi. startArg — следующий номер $N.
 // prefix — алиас таблицы с точкой, например "sht.", или пустая строка.
 func SearchClause(q, prefix string, startArg int) (clause string, args []any, nextArg int) {

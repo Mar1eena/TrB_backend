@@ -11,6 +11,27 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// instrSortCols — whitelist колонок сортировки TrB.sht.
+var instrSortCols = map[string]string{
+	"ticker": "ticker", "name": "name", "figi": "figi", "uid": "uid",
+	"currency": "currency", "exchange": "exchange", "version": "version",
+	"trading_status": "trading_status", "lot": "lot",
+}
+
+// instrFilterCols — whitelist колонок для подстрочных фильтров.
+var instrFilterCols = map[string]string{
+	"ticker": "ticker", "name": "name", "figi": "figi", "uid": "uid",
+	"currency": "currency", "exchange": "exchange", "class_code": "class_code", "sector": "sector",
+}
+
+func fieldFilterInputs(pb []*instrpb.FieldFilter) []chdb.FieldFilterInput {
+	out := make([]chdb.FieldFilterInput, 0, len(pb))
+	for _, f := range pb {
+		out = append(out, chdb.FieldFilterInput{Field: f.GetField(), Value: f.GetValue()})
+	}
+	return out
+}
+
 func (s *Server) ListInstruments(ctx context.Context, req *instrpb.ListInstrumentsRequest) (*instrpb.ListInstrumentsResponse, error) {
 	if req == nil {
 		req = &instrpb.ListInstrumentsRequest{}
@@ -19,15 +40,27 @@ func (s *Server) ListInstruments(ctx context.Context, req *instrpb.ListInstrumen
 	q, limit, offset := chdb.FilterFrom(f.GetQ(), int(f.GetLimit()), int(f.GetOffset()), 2000, 20000)
 	lite := req.GetLite()
 
-	clause, searchArgs, next := chdb.SearchClause(q, "", 1)
+	searchClause, searchArgs, next := chdb.SearchClause(q, "", 1)
+	fieldClause, fieldArgs, next := chdb.FieldFiltersClause(fieldFilterInputs(f.GetFieldFilters()), instrFilterCols, next)
+	whereSQL := searchClause + " AND " + fieldClause
+	whereArgs := append(append([]any{}, searchArgs...), fieldArgs...)
+
+	var total uint64
+	countSQL := fmt.Sprintf("SELECT count() FROM TrB.sht FINAL WHERE %s", whereSQL)
+	if err := s.ch.QueryRow(ctx, countSQL, whereArgs...).Scan(&total); err != nil {
+		s.log.Error().Err(err).Str("q", q).Msg("не удалось посчитать инструменты")
+		return nil, status.Errorf(codes.Internal, "не удалось посчитать инструменты: %v", err)
+	}
+
+	order := chdb.SortClause(f.GetSortBy(), instrSortCols, "ticker", f.GetSortDesc())
 	query := fmt.Sprintf(`
 SELECT %s
 FROM TrB.sht FINAL
 WHERE %s
-ORDER BY ticker ASC
-LIMIT $%d OFFSET $%d`, chdb.ShtSelectColumns, clause, next, next+1)
+%s
+LIMIT $%d OFFSET $%d`, chdb.ShtSelectColumns, whereSQL, order, next, next+1)
 
-	args := append(searchArgs, uint64(limit), uint64(offset))
+	args := append(whereArgs, uint64(limit), uint64(offset))
 	var rows []instrpkg.InstrumentRow
 	if err := s.ch.Select(ctx, &rows, query, args...); err != nil {
 		s.log.Error().Err(err).Str("q", q).Msg("не удалось загрузить инструменты")
@@ -50,8 +83,8 @@ LIMIT $%d OFFSET $%d`, chdb.ShtSelectColumns, clause, next, next+1)
 			VersionCount: count,
 		})
 	}
-	s.log.Info().Int("count", len(items)).Bool("lite", lite).Str("q", q).Msg("инструменты загружены")
-	return &instrpb.ListInstrumentsResponse{Items: items}, nil
+	s.log.Info().Int("count", len(items)).Int64("total", int64(total)).Bool("lite", lite).Str("q", q).Msg("инструменты загружены")
+	return &instrpb.ListInstrumentsResponse{Items: items, Total: int32(total)}, nil
 }
 
 type versionCountRow struct {
