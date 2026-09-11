@@ -380,6 +380,141 @@ services:
         reservations:
           memory: 256M
 
+  strategysearch-manage:
+    <<: [*services-config]
+    container_name: trb-strategysearch-manage
+    image: strategysearch-manage:latest
+    build:
+      <<: *go-build
+      args:
+        CMD_PATH: ./internal/services/strategysearch/manage/cmd/main.go
+    environment:
+      - APP_RUNTIME=docker
+      - PORT=9095
+      - STRATEGYSEARCH_PORT=9095
+      - NATS_URL
+      - NATS_URL_DOCKER
+      - POSTGRES_URL
+      - POSTGRES_URL_DOCKER
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+    ports:
+      - "9095:9095"
+    depends_on:
+      - postgre-db
+      - nats-server
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          memory: 64M
+
+  # Координатор: Optuna-поиск (TrB.strategysearch.search.tasks). Оценку трайлов
+  # раздаёт пулу strategysearch-eval-worker (STRATEGYSEARCH_EVAL_MODE=distributed;
+  # если пул недоступен — деградирует в локальный ProcessPoolExecutor).
+  # Независим от strategy/strategy-engine (свой NATS/Postgres/proto-пакет).
+  # Код: internal/services/strategysearch/{engine,_common}/
+  strategysearch-engine:
+    <<: [*services-config]
+    container_name: trb-strategysearch-engine
+    image: strategysearch-engine:latest
+    build:
+      context: .
+      dockerfile: ./build/docker/services/strategysearch/engine.Dockerfile
+    command: ["python", "/app/main.py"]
+    # TEMP: локальный proto до релиза trb-proto (зеркалит `replace` в go.mod).
+    volumes:
+      - ../TrB_proto/gen/python:/opt/trbproto:ro
+    environment:
+      - APP_RUNTIME=docker
+      - PYTHONPATH=/app:/opt/trbproto
+      - STRATEGYSEARCH_METRICS_ADDR=:9107
+      - STRATEGYSEARCH_EVAL_MODE=distributed
+      - STRATEGYSEARCH_EVAL_TASK_TIMEOUT_SEC
+      - STRATEGYSEARCH_EVAL_CACHE_TTL_DAYS
+      - STRATEGYSEARCH_PG_POOL
+      - STRATEGYSEARCH_ENGINE_VERSION
+      - NATS_URL
+      - NATS_URL_DOCKER
+      - CLICKHOUSE_URL
+      - CLICKHOUSE_URL_DOCKER
+      - CLICKHOUSE_DATABASE
+      - CLICKHOUSE_USER
+      - CLICKHOUSE_USERNAME
+      - CLICKHOUSE_PASSWORD
+      - POSTGRES_URL
+      - POSTGRES_URL_DOCKER
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9107/healthz').status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - clickhouse-db
+      - postgre-db
+      - nats-server
+    deploy:
+      resources:
+        limits:
+          memory: 3072M
+        reservations:
+          memory: 256M
+
+  # Пул stateless-воркеров: вся тяжёлая оценка трайлов Optuna-поиска.
+  # Отдельный сервис/образ, свой код internal/services/strategysearch/{eval-worker,_common}/.
+  # PG не нужен (кэш пишет координатор).
+  # Масштабировать: docker compose up -d --scale strategysearch-eval-worker=8
+  strategysearch-eval-worker:
+    <<: [*services-config]
+    image: strategysearch-eval-worker:latest
+    build:
+      context: .
+      dockerfile: ./build/docker/services/strategysearch/eval-worker.Dockerfile
+    command: ["python", "/app/main.py"]
+    volumes:
+      - ../TrB_proto/gen/python:/opt/trbproto:ro
+    environment:
+      - APP_RUNTIME=docker
+      - PYTHONPATH=/app:/opt/trbproto
+      - STRATEGYSEARCH_METRICS_ADDR=:9107
+      - STRATEGYSEARCH_EVAL_WORKER_CONCURRENCY=2
+      - STRATEGYSEARCH_EVAL_MAX_TASKS_PER_CHILD
+      - STRATEGYSEARCH_EVAL_TASK_TIMEOUT_SEC
+      - STRATEGYSEARCH_CANDLE_CACHE_SIZE
+      - STRATEGYSEARCH_ENGINE_VERSION
+      - NATS_URL
+      - NATS_URL_DOCKER
+      - CLICKHOUSE_URL
+      - CLICKHOUSE_URL_DOCKER
+      - CLICKHOUSE_DATABASE
+      - CLICKHOUSE_USER
+      - CLICKHOUSE_USERNAME
+      - CLICKHOUSE_PASSWORD
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9107/healthz').status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - clickhouse-db
+      - nats-server
+      - strategysearch-manage
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          memory: 3072M
+        reservations:
+          memory: 256M
+
   clickhouse:
     <<: [*services-config]
     container_name: trb-clickhouse

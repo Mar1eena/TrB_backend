@@ -7,7 +7,7 @@ go 1.26.1
 // messages is tagged. Remove the replace directive below before commit.
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
-	github.com/Mar1eena/trb_proto v1.0.54
+	github.com/Mar1eena/trb_proto v1.0.55
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.4
 	github.com/joho/godotenv v1.5.1

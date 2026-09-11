@@ -1,0 +1,344 @@
+"""Анализаторы backtrader -> метрики (base + QuantStats) + кривая капитала + сделки + ряды индикаторов."""
+
+from __future__ import annotations
+
+import math
+from datetime import datetime, timezone
+from typing import Any
+
+import backtrader as bt
+import pandas as pd
+
+from . import indicators as ind_mod
+from . import quantmetrics
+
+# Overlap Studies рисуются поверх цены, остальные — отдельной панелью.
+_OVERLAY_INDICATORS = frozenset({
+    "sma", "ema", "wma", "dema", "tema", "trima", "kama", "t3", "ma", "mama",
+    "bbands", "sar", "sarext", "midpoint", "midprice", "ht_trendline", "mavp",
+})
+
+
+class EquityRecorder(bt.Analyzer):
+    """Капитал/кэш/стоимость позиции по каждому бару + доходность и просадка."""
+
+    def start(self) -> None:
+        self.points: list[dict[str, Any]] = []
+        self._peak = None
+        self._prev = None
+
+    def next(self) -> None:
+        value = self.strategy.broker.getvalue()
+        cash = self.strategy.broker.getcash()
+        dt = self.strategy.datas[0].datetime.datetime(0)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        self._peak = value if self._peak is None else max(self._peak, value)
+        dd = 0.0 if not self._peak else (self._peak - value) / self._peak
+        ret = 0.0 if not self._prev else (value / self._prev - 1.0)
+        self._prev = value
+        self.points.append({
+            "time": dt, "equity": value, "cash": cash,
+            "position_value": value - cash, "drawdown": dd, "ret": ret,
+        })
+
+    def get_analysis(self) -> dict:
+        return {"points": self.points}
+
+
+class TradeRecorder(bt.Analyzer):
+    """Пары входных/выходных исполнений -> записи о сделках.
+
+    Цены входа/выхода берём из фактических исполнений ордеров (notify_order),
+    а не восстанавливаем из PnL. PnL и число баров — из backtrader Trade.
+    """
+
+    def start(self) -> None:
+        self.trades: list[dict[str, Any]] = []
+        self._seq = 0
+        self._last_fill: dict[str, Any] | None = None
+        self._cur: dict[str, Any] | None = None
+
+    def notify_order(self, order) -> None:
+        if order.status != order.Completed:
+            return
+        ex = order.executed
+        dt = self.strategy.datas[0].datetime.datetime(0)
+        self._last_fill = {
+            "price": float(ex.price),
+            "size": float(ex.size),  # знаковый: + покупка, − продажа
+            "dt": dt,
+        }
+
+    def notify_trade(self, trade: bt.Trade) -> None:
+        if getattr(trade, "justopened", False):
+            self._cur = {
+                "entry_price": float(trade.price),
+                "entry_dt": bt.num2date(trade.dtopen),
+                "size": abs(float(trade.size)),
+                "is_long": trade.size > 0,
+            }
+            return
+        if not trade.isclosed or self._cur is None:
+            return
+
+        cur = self._cur
+        fill = self._last_fill or {}
+        exit_price = float(fill.get("price", trade.price))
+        size = cur["size"] or abs(float(fill.get("size", 0.0)))
+        entry_price = cur["entry_price"]
+        entry_value = entry_price * size
+        exit_value = exit_price * size
+        pnl = float(trade.pnlcomm)
+
+        self._seq += 1
+        self.trades.append({
+            "trade_id": self._seq,
+            "is_long": 1 if cur["is_long"] else 0,
+            "entry_time": _utc(cur["entry_dt"]),
+            "entry_price": entry_price,
+            "exit_time": _utc(bt.num2date(trade.dtclose)),
+            "exit_price": exit_price,
+            "size": float(size),
+            "pnl": pnl,
+            "pnl_pct": (pnl / entry_value) if entry_value else 0.0,
+            "bars_held": int(trade.barlen),
+            "mae": 0.0,
+            "mfe": 0.0,
+            "entry_reason": "",
+            "exit_reason": "",
+            "_entry_value": entry_value,
+            "_exit_value": exit_value,
+        })
+        self._cur = None
+
+    def get_analysis(self) -> dict:
+        return {"trades": self.trades}
+
+
+class LeanEquity(bt.Analyzer):
+    """Только скаляры капитала — без списка точек по барам.
+
+    Для поиска нужны лишь метрики; полная кривая (EquityRecorder) держит по
+    dict на каждый бар и на длинных сериях съедает сотни МБ.
+    """
+
+    def start(self) -> None:
+        self._peak = None
+        self.final = None
+        self.bars = 0
+        self.in_market = 0
+
+    def next(self) -> None:
+        value = self.strategy.broker.getvalue()
+        self._peak = value if self._peak is None else max(self._peak, value)
+        self.final = value
+        self.bars += 1
+        if abs(value - self.strategy.broker.getcash()) > 1e-9:
+            self.in_market += 1
+
+    def get_analysis(self) -> dict:
+        return {"final": self.final, "bars": self.bars, "in_market": self.in_market}
+
+
+class CheckpointEquity(bt.Analyzer):
+    """Капитал каждые interval_bars баров — для пост-фактум прунинга Optuna.
+
+    Не пишет полную покотовую кривую (в отличие от EquityRecorder): память
+    O(bars/interval_bars), а не O(bars). Значение репортится координатору как
+    cumulative-return-so-far — дешёвый прокси прогресса трайла для сравнения
+    trial.report()/should_prune() между конкурентными трайлами; полную
+    QuantStats-метрику на каждом чекпойнте не считаем (дорого и не нужно —
+    воркер уже досчитал бэктест целиком к моменту, когда чекпойнты возвращаются).
+    """
+
+    params = (("interval_bars", 0),)
+
+    def start(self) -> None:
+        self._bar = 0
+        self.points: list[tuple[int, float]] = []
+
+    def next(self) -> None:
+        self._bar += 1
+        if self.p.interval_bars and self._bar % self.p.interval_bars == 0:
+            self.points.append((self._bar, float(self.strategy.broker.getvalue())))
+
+    def get_analysis(self) -> dict:
+        return {"points": self.points}
+
+
+def attach(cerebro: bt.Cerebro, *, lean: bool = False, checkpoint_interval_bars: int = 0) -> None:
+    if lean:
+        cerebro.addanalyzer(LeanEquity, _name="lean")
+    else:
+        cerebro.addanalyzer(EquityRecorder, _name="equity")
+        cerebro.addanalyzer(TradeRecorder, _name="trades")
+    if checkpoint_interval_bars:
+        cerebro.addanalyzer(CheckpointEquity, _name="checkpoint", interval_bars=checkpoint_interval_bars)
+    cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", timeframe=bt.TimeFrame.Days, riskfreerate=0.0)
+    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="dd")
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="ta")
+    cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
+    cerebro.addanalyzer(bt.analyzers.TimeReturn, _name="timereturn", timeframe=bt.TimeFrame.Days)
+
+
+def extract(strat: bt.Strategy, initial_cash: float, *, lean: bool = False,
+           benchmark_df: pd.DataFrame | None = None) -> dict[str, Any]:
+    an = strat.analyzers
+
+    ta = an.ta.get_analysis()
+    total = _dig(ta, "total", "total", default=0) or 0
+    won = _dig(ta, "won", "total", default=0) or 0
+    pnl_won = _dig(ta, "won", "pnl", "total", default=0.0) or 0.0
+    pnl_lost = _dig(ta, "lost", "pnl", "total", default=0.0) or 0.0
+    avg_trade = _dig(ta, "pnl", "net", "average", default=0.0) or 0.0
+
+    returns = an.returns.get_analysis()
+    rtot = returns.get("rtot", 0.0) or 0.0
+    rnorm = returns.get("rnorm", 0.0) or 0.0
+
+    tr = an.timereturn.get_analysis()
+    tr_series = list(tr.values())
+    sortino = _sortino(tr_series)
+
+    if lean:
+        le = an.lean.get_analysis()
+        eq: list = []
+        trades: list = []
+        final_equity = le.get("final") or initial_cash
+        bars = le.get("bars", 0)
+        in_market = le.get("in_market", 0)
+    else:
+        eq = an.equity.get_analysis().get("points", [])
+        trades = an.trades.get_analysis().get("trades", [])
+        final_equity = eq[-1]["equity"] if eq else initial_cash
+        bars = len(eq)
+        in_market = sum(1 for p in eq if abs(p["position_value"]) > 1e-9)
+
+    dd = an.dd.get_analysis()
+    max_dd = (_dig(dd, "max", "drawdown", default=0.0) or 0.0) / 100.0
+
+    metrics = {
+        "total_return": math.expm1(rtot) if rtot else (final_equity / initial_cash - 1.0),
+        "cagr": rnorm,
+        "sharpe": _finite(an.sharpe.get_analysis().get("sharperatio")),
+        "sortino": sortino,
+        "max_drawdown": max_dd,
+        "win_rate": (won / total) if total else 0.0,
+        "profit_factor": (pnl_won / abs(pnl_lost)) if pnl_lost else 0.0,
+        "sqn": _finite(an.sqn.get_analysis().get("sqn")),
+        "trades_count": int(total),
+        "exposure": (in_market / bars) if bars else 0.0,
+        "final_equity": float(final_equity),
+        "avg_trade_pct": (avg_trade / initial_cash) if initial_cash else 0.0,
+        "expectancy": float(avg_trade),
+    }
+
+    try:
+        returns_s = pd.Series(tr, dtype="float64")
+        returns_s.index = pd.to_datetime(list(tr.keys()))
+        bench_s = _benchmark_returns(benchmark_df, returns_s.index) if benchmark_df is not None else None
+        metrics.update(quantmetrics.compute(returns_s, bench_s))
+    except Exception:  # noqa: BLE001 — расширенные метрики best-effort, не роняют бэктест
+        pass
+
+    result: dict[str, Any] = {"metrics": metrics, "equity": eq, "trades": trades}
+
+    if hasattr(an, "checkpoint"):
+        points = an.checkpoint.get_analysis().get("points", [])
+        result["checkpoints"] = [
+            {"step": step, "value": (value / initial_cash - 1.0) if initial_cash else 0.0}
+            for step, value in points
+        ]
+    return result
+
+
+def _benchmark_returns(benchmark_df: pd.DataFrame, align_to: pd.DatetimeIndex) -> pd.Series | None:
+    """Дневные доходности бенчмарка (close-to-close), приведённые к сетке дат стратегии.
+
+    benchmark_df может быть на любом интервале свечей — ресемплируем до дневных
+    закрытий, чтобы соответствовать TimeReturn(Days) стратегии, затем
+    выравниваем по датам стратегии методом ближайшего значения.
+    """
+    if benchmark_df is None or benchmark_df.empty:
+        return None
+    daily_close = benchmark_df["close"].resample("1D").last().dropna()
+    if len(daily_close) < 2:
+        return None
+    bench_ret = daily_close.pct_change().dropna()
+    if bench_ret.empty:
+        return None
+    bench_ret.index = pd.to_datetime(bench_ret.index).tz_localize(None)
+    aligned_idx = pd.to_datetime(align_to).tz_localize(None)
+    return bench_ret.reindex(aligned_idx, method="nearest")
+
+
+def extract_indicator_series(strat: bt.Strategy, spec, df) -> list[dict[str, Any]]:
+    """Значения индикаторов стратегии по барам df — для графика в результате бэктеста."""
+    ind_map = getattr(strat, "_ind", {}) or {}
+    idx = list(df.index)
+    out: list[dict[str, Any]] = []
+    for ref in spec.indicators:
+        line = ind_map.get(ref.id)
+        if line is None:
+            continue
+        try:
+            arr = list(line.array)
+        except Exception:  # noqa: BLE001
+            continue
+        name = (ind_mod.indicator_type_name(ref.settings) or "").lower()
+        points: list[tuple[datetime, float]] = []
+        for i in range(min(len(arr), len(idx))):
+            v = arr[i]
+            if v is None:
+                continue
+            fv = float(v)
+            if not math.isfinite(fv):
+                continue
+            points.append((idx[i].to_pydatetime(), fv))
+        if points:
+            out.append({
+                "indicator_id": ref.id,
+                "indicator": name,
+                "output_key": ref.output_key or "",
+                "overlay": name in _OVERLAY_INDICATORS,
+                "points": points,
+            })
+    return out
+
+
+def _sortino(series: list[float]) -> float:
+    if not series:
+        return 0.0
+    downside = [r for r in series if r < 0]
+    if not downside:
+        return 0.0
+    import statistics
+
+    dd_std = statistics.pstdev(downside) if len(downside) > 1 else abs(downside[0])
+    mean = statistics.fmean(series)
+    if dd_std == 0:
+        return 0.0
+    return (mean / dd_std) * math.sqrt(252)
+
+
+def _dig(d: dict, *keys, default=None):
+    cur: Any = d
+    for k in keys:
+        if not isinstance(cur, dict) or k not in cur:
+            return default
+        cur = cur[k]
+    return cur
+
+
+def _finite(x) -> float:
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) else 0.0
+
+
+def _utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)

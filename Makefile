@@ -17,9 +17,14 @@ cmd_strategy_engine = ./internal/services/strategy/engine/main.py
 cmd_strategy_eval_worker = ./internal/services/strategy/eval-worker/main.py
 strategy_engine_dockerfile = ./build/docker/services/strategy/engine.Dockerfile
 strategy_eval_worker_dockerfile = ./build/docker/services/strategy/eval-worker.Dockerfile
+cmd_strategysearch_manage = ./internal/services/strategysearch/manage/cmd/main.go
+cmd_strategysearch_engine = ./internal/services/strategysearch/engine/main.py
+cmd_strategysearch_eval_worker = ./internal/services/strategysearch/eval-worker/main.py
+strategysearch_engine_dockerfile = ./build/docker/services/strategysearch/engine.Dockerfile
+strategysearch_eval_worker_dockerfile = ./build/docker/services/strategysearch/eval-worker.Dockerfile
 TRB_PROTO_REF ?= main
 
-.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db instruments services gene invest ver indicators indicators-manage indicators-calculation indicators-docker indicators-manage-docker indicators-calculation-docker strategy strategy-manage strategy-engine strategy-eval-worker strategy-docker strategy-manage-docker strategy-engine-docker strategy-eval-worker-docker
+.PHONY: build up upd down envoy envoy_proto_sync nats clickhouse historicCandle historicCandleScheduler postgre postgre-1c-db instruments services gene invest ver indicators indicators-manage indicators-calculation indicators-docker indicators-manage-docker indicators-calculation-docker strategy strategy-manage strategy-engine strategy-eval-worker strategy-docker strategy-manage-docker strategy-engine-docker strategy-eval-worker-docker strategysearch strategysearch-manage strategysearch-engine strategysearch-eval-worker strategysearch-docker strategysearch-manage-docker strategysearch-engine-docker strategysearch-eval-worker-docker
 
 up:
 	docker-compose --project-name=${name} up -d
@@ -99,13 +104,35 @@ strategy-engine-docker:
 strategy-eval-worker-docker:
 	docker build -f ${strategy_eval_worker_dockerfile} . -t strategy-eval-worker:latest
 
+strategysearch: strategysearch-manage
+
+strategysearch-manage:
+	go run ${cmd_strategysearch_manage}
+
+strategysearch-engine:
+	python ${cmd_strategysearch_engine}
+
+strategysearch-eval-worker:
+	python ${cmd_strategysearch_eval_worker}
+
+strategysearch-docker: strategysearch-manage-docker strategysearch-engine-docker strategysearch-eval-worker-docker
+
+strategysearch-manage-docker:
+	docker build -f ${go_dockerfile} . --build-arg CMD_PATH=${cmd_strategysearch_manage} -t strategysearch-manage:latest
+
+strategysearch-engine-docker:
+	docker build -f ${strategysearch_engine_dockerfile} . -t strategysearch-engine:latest
+
+strategysearch-eval-worker-docker:
+	docker build -f ${strategysearch_eval_worker_dockerfile} . -t strategysearch-eval-worker:latest
+
 ver:
 	go get github.com/Mar1eena/trb_proto@latest
 	go mod tidy
 
 # Сначала обновляет trb_proto, затем собирает все сервисы
 # historicCandleScheduler — пока не реализован (см. README)
-build: gene ver historicCandle invest indicators-docker strategy-docker postgre postgre-1c-db instruments clickhouse nats envoy
+build: gene ver historicCandle invest indicators-docker strategy-docker strategysearch-docker postgre postgre-1c-db instruments clickhouse nats envoy
 
 make upd: build up
 

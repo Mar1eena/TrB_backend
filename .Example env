@@ -93,6 +93,18 @@ STRATEGY_ENGINE_VERSION=            # переопределение метки 
 STRATEGY_INDICATOR_SOURCE=clickhouse # clickhouse — заказать расчёт в calculation и читать из CH; talib — считать в движке
 STRATEGY_INDICATOR_WAIT_SEC=180     # сколько ждать появления значений индикатора в CH до фолбэка на talib
 
+#StrategySearch service (Optuna-поиск на backtrader/TA-Lib/QuantStats; независим от Strategy)
+STRATEGYSEARCH_PORT=9095
+STRATEGYSEARCH_METRICS_ADDR=:9107        # HTTP /metrics,/healthz,/readyz (общий порт engine и eval-worker, разные контейнеры)
+STRATEGYSEARCH_PG_POOL=4                 # размер psycopg-пула координатора
+STRATEGYSEARCH_ENGINE_VERSION=           # переопределение метки версии движка (пусто => авто bt+talib+optuna)
+STRATEGYSEARCH_EVAL_MODE=auto            # auto|distributed|local — раздавать трайлы eval-worker'ам или считать локально
+STRATEGYSEARCH_EVAL_TASK_TIMEOUT_SEC=120 # таймаут ожидания TrialResult от воркера
+STRATEGYSEARCH_EVAL_CACHE_TTL_DAYS=30    # TTL строк strategysearch_eval_cache
+STRATEGYSEARCH_EVAL_WORKER_CONCURRENCY=  # параллелизм ProcessPoolExecutor воркера (пусто => авто по cpu/памяти cgroup)
+STRATEGYSEARCH_EVAL_MAX_TASKS_PER_CHILD=40 # перезапуск дочернего процесса воркера каждые N задач
+STRATEGYSEARCH_CANDLE_CACHE_SIZE=2       # LRU-кэш наборов свечей на дочерний процесс воркера (uid + benchmark_uid)
+
 #Historic candle service
 INTERVAL_UPDATE_HC = 30 # интервал обновления свечей в секундах
 
