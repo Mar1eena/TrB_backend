@@ -66,6 +66,20 @@ CREATE TABLE IF NOT EXISTS strategysearch_eval_cache (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS strategysearch_eval_cache_gc_idx ON strategysearch_eval_cache (created_at);
+
+-- Именованный снимок настроек формы поиска (base_spec/search_space/study/config) —
+-- чтобы не заполнять форму заново. Не связан со strategysearch_run: пресет не
+-- запускает поиск сам по себе, только хранит конфигурацию для последующего SubmitSearch.
+CREATE TABLE IF NOT EXISTS strategysearch_preset (
+    id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name         text        NOT NULL,
+    base_spec    jsonb       NOT NULL,
+    search_space jsonb       NOT NULL DEFAULT '[]',
+    study        jsonb       NOT NULL,
+    config       jsonb       NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS strategysearch_preset_created_idx ON strategysearch_preset (created_at DESC);
 `
 
 // EnsureStrategySearchSchema создаёт таблицы домена strategysearch, если их ещё нет.

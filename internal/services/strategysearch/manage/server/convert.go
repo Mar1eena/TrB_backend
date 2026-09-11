@@ -131,6 +131,38 @@ func trialRowToProto(r postgres.StrategySearchTrialRow) (*strategysearchpb.Trial
 	}, nil
 }
 
+func presetRowToProto(r postgres.StrategySearchPresetRow) (*strategysearchpb.SearchPreset, error) {
+	baseSpec, err := specFromJSON(r.BaseSpec)
+	if err != nil {
+		return nil, err
+	}
+	study := &strategysearchpb.StudyConfig{}
+	_ = pjUnmarshal.Unmarshal(r.Study, study)
+	cfg := &strategysearchpb.BacktestConfig{}
+	_ = pjUnmarshal.Unmarshal(r.Config, cfg)
+
+	var space []*strategysearchpb.ParamRange
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(r.SearchSpace, &rawItems); err == nil {
+		for _, it := range rawItems {
+			pr := &strategysearchpb.ParamRange{}
+			if pjUnmarshal.Unmarshal(it, pr) == nil {
+				space = append(space, pr)
+			}
+		}
+	}
+
+	return &strategysearchpb.SearchPreset{
+		Id:          r.ID,
+		Name:        r.Name,
+		BaseSpec:    baseSpec,
+		SearchSpace: space,
+		Study:       study,
+		Config:      cfg,
+		CreatedAt:   ts(r.CreatedAt),
+	}, nil
+}
+
 func statusFromString(s string) strategysearchpb.RunStatus {
 	switch s {
 	case "queued":

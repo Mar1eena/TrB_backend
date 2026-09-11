@@ -193,3 +193,74 @@ func scanStrategySearchTrialRows(rows pgx.Rows) ([]StrategySearchTrialRow, error
 	}
 	return out, rows.Err()
 }
+
+// --- strategysearch_preset ---
+
+type StrategySearchPresetRow struct {
+	ID          string
+	Name        string
+	BaseSpec    json.RawMessage
+	SearchSpace json.RawMessage
+	Study       json.RawMessage
+	Config      json.RawMessage
+	CreatedAt   time.Time
+}
+
+type NewStrategySearchPreset struct {
+	Name        string
+	BaseSpec    json.RawMessage
+	SearchSpace json.RawMessage
+	Study       json.RawMessage
+	Config      json.RawMessage
+}
+
+func InsertStrategySearchPreset(ctx context.Context, pool *pgxpool.Pool, in NewStrategySearchPreset) (StrategySearchPresetRow, error) {
+	var r StrategySearchPresetRow
+	err := pool.QueryRow(ctx, `
+		INSERT INTO strategysearch_preset (name, base_spec, search_space, study, config)
+		VALUES ($1,$2,$3,$4,$5)
+		RETURNING `+strategySearchPresetCols,
+		in.Name, in.BaseSpec, in.SearchSpace, in.Study, in.Config,
+	).Scan(scanStrategySearchPreset(&r)...)
+	return r, err
+}
+
+func ListStrategySearchPresets(ctx context.Context, pool *pgxpool.Pool, limit, offset int) ([]StrategySearchPresetRow, int, error) {
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM strategysearch_preset`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT `+strategySearchPresetCols+` FROM strategysearch_preset
+		ORDER BY created_at DESC LIMIT $1 OFFSET $2`, clampLimit(limit), offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]StrategySearchPresetRow, 0)
+	for rows.Next() {
+		var r StrategySearchPresetRow
+		if err := rows.Scan(scanStrategySearchPreset(&r)...); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, r)
+	}
+	return out, total, rows.Err()
+}
+
+func DeleteStrategySearchPreset(ctx context.Context, pool *pgxpool.Pool, id string) error {
+	tag, err := pool.Exec(ctx, `DELETE FROM strategysearch_preset WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const strategySearchPresetCols = "id,name,base_spec,search_space,study,config,created_at"
+
+func scanStrategySearchPreset(r *StrategySearchPresetRow) []any {
+	return []any{&r.ID, &r.Name, &r.BaseSpec, &r.SearchSpace, &r.Study, &r.Config, &r.CreatedAt}
+}
