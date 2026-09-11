@@ -43,6 +43,8 @@ def _install_fake_pg() -> None:
     fake.rank_search_candidates = _noop
     fake.search_is_canceled = lambda *_a, **_k: False
     fake.run_is_canceled = lambda *_a, **_k: False
+    fake.fetch_top_candidates = lambda *_a, **_k: []
+    fake.update_candidates_walkforward = _noop
 
     def mark_search_status(sid, status, **kw):
         fake.calls["status"].append((sid, status, kw))

@@ -274,3 +274,31 @@ def rank_search_candidates(search_id: str) -> None:
                FROM ranked WHERE ranked.id = sc.id""",
             (search_id,),
         )
+
+
+def fetch_top_candidates(search_id: str, limit: int) -> list[dict[str, Any]]:
+    """Лучшие оценённые кандидаты поиска по текущему score (для walk-forward)."""
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT id, spec, score, metrics FROM search_candidate
+               WHERE search_run_id=%s AND status='evaluated'
+               ORDER BY score DESC LIMIT %s""",
+            (search_id, limit),
+        ).fetchall()
+    return [{"id": r[0], "spec": r[1], "score": r[2], "metrics": r[3]} for r in rows]
+
+
+def update_candidates_walkforward(rows: list[dict[str, Any]]) -> None:
+    """Батч-обновление score + домердж walk-forward метаданных в metrics (jsonb).
+
+    Каждая строка: {id, score, meta}.
+    """
+    if not rows:
+        return
+    params = [(r["score"], json_dumps(r.get("meta") or {}), r["id"]) for r in rows]
+    with _conn() as c:
+        c.cursor().executemany(
+            """UPDATE search_candidate SET score=%s, metrics = metrics || %s::jsonb
+               WHERE id=%s""",
+            params,
+        )

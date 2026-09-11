@@ -26,7 +26,7 @@ from natsloop import TransientError
 from specmod import load as specload
 from specmod.hash import spec_hash_signed
 
-from . import objective as obj_mod
+from . import genome, objective as obj_mod
 from .cache import EvalCache, eval_key
 from .genetic import GeneticSearch, Individual
 
@@ -88,6 +88,80 @@ def _cache_ttl_days() -> int:
         return int(raw) if raw else 30
     except ValueError:
         return 30
+
+
+def _parsimony_coef() -> float:
+    raw = os.environ.get("STRATEGY_PARSIMONY_COEF")
+    try:
+        return float(raw) if raw else 0.0
+    except ValueError:
+        return 0.0
+
+
+def _apply_parsimony(ind: Individual) -> None:
+    coef = _parsimony_coef()
+    if coef and math.isfinite(ind.score):
+        ind.score -= coef * genome.complexity(ind.spec)
+
+
+def _walk_forward_windows() -> int:
+    raw = os.environ.get("STRATEGY_WALK_FORWARD_WINDOWS")
+    try:
+        return int(raw) if raw else 0
+    except ValueError:
+        return 0
+
+
+def _walk_forward_topk() -> int:
+    raw = os.environ.get("STRATEGY_WALK_FORWARD_TOPK")
+    try:
+        return int(raw) if raw else 10
+    except ValueError:
+        return 10
+
+
+def _run_walk_forward(search_id: str, df: pd.DataFrame, config, objective) -> None:
+    """Переоценивает top-K кандидатов на W непересекающихся окнах периода и понижает score
+    неустойчивым (переобученным под весь период) — переранжирует search_candidate по результату.
+    """
+    windows = _walk_forward_windows()
+    if windows <= 0:
+        return
+    top = pg.fetch_top_candidates(search_id, _walk_forward_topk())
+    if not top:
+        return
+
+    bounds = [int(i * len(df) / windows) for i in range(windows + 1)]
+    rows: list[dict] = []
+    for cand in top:
+        spec = specload.parse_spec(cand["spec"])
+        scores: list[float] = []
+        for i in range(windows):
+            window_df = df.iloc[bounds[i]:bounds[i + 1]]
+            try:
+                metrics = run_backtest_inproc(spec, window_df, config, lean=True)["metrics"]
+            except Exception:  # noqa: BLE001
+                metrics = {}
+            scores.append(obj_mod.score(metrics, objective) if metrics else float("-inf"))
+
+        finite = [s for s in scores if math.isfinite(s)]
+        if len(finite) < math.ceil(windows / 2):
+            robust = float("-inf")
+            wf_mean = wf_std = wf_min = None
+        else:
+            wf_mean = sum(finite) / len(finite)
+            wf_std = (sum((s - wf_mean) ** 2 for s in finite) / len(finite)) ** 0.5
+            wf_min = min(finite)
+            robust = wf_mean - wf_std
+
+        rows.append({
+            "id": cand["id"],
+            "score": robust if math.isfinite(robust) else -1e18,
+            "meta": {"wf_mean": wf_mean, "wf_std": wf_std, "wf_min": wf_min, "wf_windows": scores},
+        })
+
+    pg.update_candidates_walkforward(rows)
+    pg.rank_search_candidates(search_id)
 
 
 class _Evaluator:
@@ -294,6 +368,10 @@ def run_search(ch_client, search_id: str, dispatcher=None) -> None:
         ev.close()
 
     pg.rank_search_candidates(search_id)
+    try:
+        _run_walk_forward(search_id, df, config, objective)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("search %s: walk-forward не удался: %s", search_id, exc)
     final_status = "canceled" if pg.search_is_canceled(search_id) else "succeeded"
     pg.update_search_progress(search_id, {
         "status": "RUN_SUCCEEDED" if final_status == "succeeded" else "RUN_CANCELED",
@@ -334,11 +412,13 @@ def _run_generation(ev: _Evaluator, fresh: list[Individual], gen: int,
         for ind in survivors:
             metrics = full.get(id(ind), {})
             ind.score = obj_mod.score(metrics, objective) if metrics else float("-inf")
+            _apply_parsimony(ind)
             _accumulate(rows, ch_rows, ev.search_id, ind, metrics, gen, "evaluated")
             best = _better(best, rows[-1]["id"], ind.score)
         for ind in losers:
             metrics = low.get(id(ind), {})
             ind.score = obj_mod.score(metrics, objective) if metrics else float("-inf")
+            _apply_parsimony(ind)
             _accumulate(rows, ch_rows, ev.search_id, ind, metrics, gen, "pruned")
     else:
         got = ev.evaluate(fresh, 1.0)
@@ -346,6 +426,7 @@ def _run_generation(ev: _Evaluator, fresh: list[Individual], gen: int,
         for ind in fresh:
             metrics = got.get(id(ind), {})
             ind.score = obj_mod.score(metrics, objective) if metrics else float("-inf")
+            _apply_parsimony(ind)
             status = "evaluated" if metrics and ind.score != float("-inf") else "failed"
             _accumulate(rows, ch_rows, ev.search_id, ind, metrics, gen, status)
             if status == "evaluated":
