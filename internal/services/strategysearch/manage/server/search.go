@@ -29,24 +29,14 @@ func (s *Server) SubmitSearch(ctx context.Context, req *strategysearchpb.SubmitS
 	if study == nil {
 		study = &strategysearchpb.StudyConfig{}
 	}
-	obj := study.GetObjective()
-	if obj == nil || len(obj.GetMetrics()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "study.objective.metrics: нужна хотя бы одна метрика")
+	if ok, issues := validate.Study(study, req.GetSearchSpace()); !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "невалидные настройки поиска: %s", issuesText(issues))
 	}
 	budget := study.GetBudget()
-	if budget == nil || (budget.GetNTrials() == 0 && budget.GetTimeoutSeconds() == 0) {
-		return nil, status.Error(codes.InvalidArgument, "study.budget: задайте n_trials или timeout_seconds")
-	}
 	if budget.GetSeed() == 0 {
 		budget.Seed = rand.Uint64()
 	}
-	for i, pr := range req.GetSearchSpace() {
-		if pr.GetPath() == "" {
-			return nil, status.Errorf(codes.InvalidArgument, "search_space.%d.path пустой", i)
-		}
-	}
-	study.Objective = obj
-	study.Budget = budget
+	obj := study.GetObjective()
 
 	// search_space хранится как JSON-массив protojson-объектов ParamRange.
 	spaceItems := make([]json.RawMessage, 0, len(req.GetSearchSpace()))
