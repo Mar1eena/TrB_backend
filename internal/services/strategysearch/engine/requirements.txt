@@ -9,4 +9,7 @@ nats-py>=2.9.0
 psycopg[binary]>=3.2
 psycopg-pool>=3.2
 optuna>=4.0.0
+# RDB storage для Optuna (StudyConfig.storage.storage_url, см. search/importance.py) —
+# psycopg3-диалект ("postgresql+psycopg://") появился в 1.4.24/2.0.
+sqlalchemy>=2.0
 quantstats>=0.0.62

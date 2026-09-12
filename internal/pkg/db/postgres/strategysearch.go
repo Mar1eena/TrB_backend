@@ -161,6 +161,29 @@ func ListBestStrategySearchTrials(ctx context.Context, pool *pgxpool.Pool, searc
 	return scanStrategySearchTrialRows(rows)
 }
 
+// ListStrategySearchTrials — все трайлы поиска (любой state), по возрастанию
+// trial_number. В отличие от ListBestStrategySearchTrials (только complete),
+// нужна для графиков — история оптимизации/parallel coordinate должны
+// показывать и pruned/failed трайлы.
+func ListStrategySearchTrials(ctx context.Context, pool *pgxpool.Pool, searchID string, limit, offset int) ([]StrategySearchTrialRow, int, error) {
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM strategysearch_trial WHERE search_run_id = $1`, searchID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT `+strategySearchTrialCols+`
+		FROM strategysearch_trial
+		WHERE search_run_id = $1
+		ORDER BY trial_number
+		LIMIT $2 OFFSET $3`, searchID, clampLimit(limit), offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out, err := scanStrategySearchTrialRows(rows)
+	return out, total, err
+}
+
 // --- helpers ---
 
 const strategySearchRunCols = "id,name,base_spec,search_space,study,uid,interval,period_start,period_end,config,status,progress,error,engine_version,created_at,started_at,finished_at"

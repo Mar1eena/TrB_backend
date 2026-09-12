@@ -24,7 +24,7 @@ import envutil
 import metrics
 import pg
 from clickhouse_client import connect_with_retry
-from consumers import consume_search
+from consumers import consume_search, subscribe_importance
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ async def _run() -> None:
 
     dispatcher = build_dispatcher(nc, js, loop)
 
+    await subscribe_importance(nc, loop)
     await consume_search(js, ch_search, stop, dispatcher=dispatcher)
 
     await nc.drain()

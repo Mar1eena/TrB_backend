@@ -53,6 +53,22 @@ func (c Config) Database() string {
 	return strings.Trim(u.Path, "/")
 }
 
+// OptunaStorageURL — RDB storage URL для optuna.create_study(storage=...) на
+// том же Postgres, что и остальной сервис (SQLAlchemy-диалект psycopg3,
+// т.к. движок уже зависит от psycopg[binary]). Optuna заводит свои таблицы
+// (trials/studies/...), не пересекающиеся со strategysearch_*. Нужен, чтобы
+// после завершения поиска можно было optuna.load_study(...) и посчитать
+// param importances (fANOVA) — по умолчанию storage у Optuna in-memory и
+// Study теряется вместе с процессом движка.
+func (c Config) OptunaStorageURL() string {
+	u, err := url.Parse(c.DSN)
+	if err != nil {
+		return ""
+	}
+	u.Scheme = "postgresql+psycopg"
+	return u.String()
+}
+
 func (c Config) WithDatabase(name string) Config {
 	u, err := url.Parse(c.DSN)
 	if err != nil {

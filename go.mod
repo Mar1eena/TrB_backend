@@ -2,12 +2,13 @@ module github.com/Mar1eena/TrB_V3
 
 go 1.26.1
 
-// TEMP: develop against local proto until a trb_proto release with the
-// instruments/historiccandle split AND the strategy EvalTask/EvalResult
-// messages is tagged. Remove the replace directive below before commit.
+// TEMP: develop against local proto until a trb_proto release with
+// ListSearchTrials/GetParamImportances (Поиск 2.0: графики Optuna) is
+// tagged. Remove the replace directive below before commit.
+
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
-	github.com/Mar1eena/trb_proto v1.0.56
+	github.com/Mar1eena/trb_proto v1.0.57
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.4
 	github.com/joho/godotenv v1.5.1

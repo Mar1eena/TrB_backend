@@ -21,6 +21,10 @@ const (
 	SubjTrialResultsPrefix   = "TrB.strategysearch.trial.results."
 	SubjTrialPing            = "TrB.strategysearch.trial.ping"
 	ConsumerTrialWorker      = "strategysearch_trial_worker"
+
+	// Core-NATS request/reply: manage просит strategysearch-engine посчитать
+	// param importances (fANOVA) по RDB-хранилищу Optuna конкретного поиска.
+	SubjImportanceRequest = "TrB.strategysearch.importance.request"
 )
 
 // PublishSearch кладёт SearchTask{search_id} в стрим (MsgId=search_id для дедупа).

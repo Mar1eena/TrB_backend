@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math/rand"
+	"time"
 
 	"github.com/Mar1eena/TrB_V3/internal/pkg/db/postgres"
 	"github.com/Mar1eena/TrB_V3/internal/services/strategysearch/manage/pkg/tasks"
@@ -11,6 +12,7 @@ import (
 	strategysearchpb "github.com/Mar1eena/trb_proto/gen/go/strategysearch"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func (s *Server) SubmitSearch(ctx context.Context, req *strategysearchpb.SubmitSearchRequest) (*strategysearchpb.SubmitSearchResponse, error) {
@@ -37,6 +39,17 @@ func (s *Server) SubmitSearch(ctx context.Context, req *strategysearchpb.SubmitS
 		budget.Seed = rand.Uint64()
 	}
 	obj := study.GetObjective()
+
+	// Без storage_url Optuna держит Study только в памяти движка — она
+	// теряется по завершении поиска, и GetParamImportances не сможет
+	// реконструировать study для fANOVA. По умолчанию используем тот же
+	// Postgres, что и остальной сервис (см. postgres.Config.OptunaStorageURL).
+	if study.GetStorage().GetStorageUrl() == "" {
+		if study.Storage == nil {
+			study.Storage = &strategysearchpb.Storage{}
+		}
+		study.Storage.StorageUrl = postgres.ConfigFromEnv().OptunaStorageURL()
+	}
 
 	// search_space хранится как JSON-массив protojson-объектов ParamRange.
 	spaceItems := make([]json.RawMessage, 0, len(req.GetSearchSpace()))
@@ -106,6 +119,49 @@ func (s *Server) GetBestTrials(ctx context.Context, req *strategysearchpb.GetBes
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 		out.Items = append(out.Items, t)
+	}
+	return out, nil
+}
+
+// ListSearchTrials — все трайлы поиска (любой state), по возрастанию номера.
+// В отличие от GetBestTrials (только завершённые), нужен для графиков —
+// история оптимизации/parallel coordinate должны показывать и pruned/failed.
+func (s *Server) ListSearchTrials(ctx context.Context, req *strategysearchpb.ListSearchTrialsRequest) (*strategysearchpb.ListSearchTrialsResponse, error) {
+	rows, total, err := postgres.ListStrategySearchTrials(ctx, s.pg, req.GetSearchId(), int(req.GetLimit()), int(req.GetOffset()))
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := &strategysearchpb.ListSearchTrialsResponse{Total: int32(total)}
+	for _, r := range rows {
+		t, err := trialRowToProto(r)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		out.Items = append(out.Items, t)
+	}
+	return out, nil
+}
+
+// GetParamImportances — запрашивает у strategysearch-engine (core-NATS
+// request/reply, TrB.strategysearch.importance.request) оценку важности
+// параметров поиска (optuna fANOVA), реконструированную из RDB-хранилища
+// Optuna конкретного study. Пустой study/нет завершённых трайлов => движок
+// отвечает пустым списком, а не ошибкой.
+func (s *Server) GetParamImportances(ctx context.Context, req *strategysearchpb.GetParamImportancesRequest) (*strategysearchpb.GetParamImportancesResponse, error) {
+	if req.GetSearchId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "search_id обязателен")
+	}
+	payload, err := proto.Marshal(req)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	msg, err := s.js.C.Request(tasks.SubjImportanceRequest, payload, 10*time.Second)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "движок поиска недоступен: %s", err.Error())
+	}
+	out := &strategysearchpb.GetParamImportancesResponse{}
+	if err := proto.Unmarshal(msg.Data, out); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return out, nil
 }

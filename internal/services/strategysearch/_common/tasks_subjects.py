@@ -14,3 +14,7 @@ SUBJ_TRIAL_TASKS = "TrB.strategysearch.trial.tasks"
 SUBJ_TRIAL_RESULTS_PREFIX = "TrB.strategysearch.trial.results."
 SUBJ_TRIAL_PING = "TrB.strategysearch.trial.ping"  # core-NATS проба наличия воркеров
 CONSUMER_TRIAL_WORKER = "strategysearch_trial_worker"
+
+# manage просит engine посчитать param importances (fANOVA) по конкретному
+# search_id — core-NATS request/reply, не JetStream.
+SUBJ_IMPORTANCE_REQUEST = "TrB.strategysearch.importance.request"
