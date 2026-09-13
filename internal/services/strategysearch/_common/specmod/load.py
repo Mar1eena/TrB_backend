@@ -60,6 +60,36 @@ def parse_search_space(raw: Any) -> list[search_pb2.ParamRange]:
     return out
 
 
+def parse_template(raw: Any) -> search_pb2.StrategyTemplate | None:
+    """None => структурный поиск (палитра индикаторов) не задан, обычный base_spec-режим."""
+    if raw is None or raw == {} or raw == "":
+        return None
+    return _parse(raw, search_pb2.StrategyTemplate())
+
+
+def parse_market_space(raw: Any) -> search_pb2.MarketSpace | None:
+    """None => инструмент/интервал/период фиксированы (uid/interval/period_* из run)."""
+    if raw is None or raw == {} or raw == "":
+        return None
+    return _parse(raw, search_pb2.MarketSpace())
+
+
+def parse_market_candidates(raw: Any) -> list[search_pb2.MarketCandidate]:
+    if raw is None:
+        return []
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    out: list[search_pb2.MarketCandidate] = []
+    for item in raw or []:
+        mc = search_pb2.MarketCandidate()
+        json_format.Parse(json.dumps(item) if not isinstance(item, str) else item, mc,
+                          ignore_unknown_fields=True)
+        out.append(mc)
+    return out
+
+
 def spec_to_json(spec: spec_pb2.StrategySearchSpec) -> str:
     return json_format.MessageToJson(spec, preserving_proto_field_name=True, indent=None)
 

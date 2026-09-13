@@ -16,46 +16,66 @@ import (
 // коллизировать по идентификаторам.
 
 type StrategySearchRunRow struct {
-	ID            string
-	Name          string
-	BaseSpec      json.RawMessage
-	SearchSpace   json.RawMessage
-	Study         json.RawMessage
-	UID           string
-	Interval      int32
-	PeriodStart   time.Time
-	PeriodEnd     time.Time
-	Config        json.RawMessage
-	Status        string
-	Progress      json.RawMessage
-	Error         string
-	EngineVersion string
-	CreatedAt     time.Time
-	StartedAt     *time.Time
-	FinishedAt    *time.Time
+	ID               string
+	Name             string
+	BaseSpec         json.RawMessage
+	SearchSpace      json.RawMessage
+	Study            json.RawMessage
+	UID              string
+	Interval         int32
+	PeriodStart      time.Time
+	PeriodEnd        time.Time
+	Config           json.RawMessage
+	Status           string
+	Progress         json.RawMessage
+	Error            string
+	EngineVersion    string
+	CreatedAt        time.Time
+	StartedAt        *time.Time
+	FinishedAt       *time.Time
+	Template         json.RawMessage
+	MarketSpace      json.RawMessage
+	MarketCandidates json.RawMessage
 }
 
 type NewStrategySearchRun struct {
-	Name        string
-	BaseSpec    json.RawMessage
-	SearchSpace json.RawMessage
-	Study       json.RawMessage
-	UID         string
-	Interval    int32
-	PeriodStart time.Time
-	PeriodEnd   time.Time
-	Config      json.RawMessage
-	Progress    json.RawMessage
+	Name             string
+	BaseSpec         json.RawMessage
+	SearchSpace      json.RawMessage
+	Study            json.RawMessage
+	UID              string
+	Interval         int32
+	PeriodStart      time.Time
+	PeriodEnd        time.Time
+	Config           json.RawMessage
+	Progress         json.RawMessage
+	Template         json.RawMessage
+	MarketSpace      json.RawMessage
+	MarketCandidates json.RawMessage
 }
 
 func InsertStrategySearchRun(ctx context.Context, pool *pgxpool.Pool, in NewStrategySearchRun) (StrategySearchRunRow, error) {
 	var r StrategySearchRunRow
+	template := in.Template
+	if template == nil {
+		template = json.RawMessage("{}")
+	}
+	marketSpace := in.MarketSpace
+	if marketSpace == nil {
+		marketSpace = json.RawMessage("{}")
+	}
+	marketCandidates := in.MarketCandidates
+	if marketCandidates == nil {
+		marketCandidates = json.RawMessage("[]")
+	}
 	err := pool.QueryRow(ctx, `
 		INSERT INTO strategysearch_run
-			(name, base_spec, search_space, study, uid, interval, period_start, period_end, config, progress, status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'queued')
+			(name, base_spec, search_space, study, uid, interval, period_start, period_end, config, progress, status,
+			 template, market_space, market_candidates)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'queued',$11,$12,$13)
 		RETURNING `+strategySearchRunCols,
 		in.Name, in.BaseSpec, in.SearchSpace, in.Study, in.UID, in.Interval, in.PeriodStart, in.PeriodEnd, in.Config, in.Progress,
+		template, marketSpace, marketCandidates,
 	).Scan(scanStrategySearchRun(&r)...)
 	return r, err
 }
@@ -186,13 +206,13 @@ func ListStrategySearchTrials(ctx context.Context, pool *pgxpool.Pool, searchID 
 
 // --- helpers ---
 
-const strategySearchRunCols = "id,name,base_spec,search_space,study,uid,interval,period_start,period_end,config,status,progress,error,engine_version,created_at,started_at,finished_at"
+const strategySearchRunCols = "id,name,base_spec,search_space,study,uid,interval,period_start,period_end,config,status,progress,error,engine_version,created_at,started_at,finished_at,template,market_space,market_candidates"
 
 func scanStrategySearchRun(r *StrategySearchRunRow) []any {
 	return []any{
 		&r.ID, &r.Name, &r.BaseSpec, &r.SearchSpace, &r.Study,
 		&r.UID, &r.Interval, &r.PeriodStart, &r.PeriodEnd, &r.Config, &r.Status, &r.Progress, &r.Error, &r.EngineVersion,
-		&r.CreatedAt, &r.StartedAt, &r.FinishedAt,
+		&r.CreatedAt, &r.StartedAt, &r.FinishedAt, &r.Template, &r.MarketSpace, &r.MarketCandidates,
 	}
 }
 
@@ -227,6 +247,8 @@ type StrategySearchPresetRow struct {
 	Study       json.RawMessage
 	Config      json.RawMessage
 	CreatedAt   time.Time
+	Template    json.RawMessage
+	MarketSpace json.RawMessage
 }
 
 type NewStrategySearchPreset struct {
@@ -235,15 +257,25 @@ type NewStrategySearchPreset struct {
 	SearchSpace json.RawMessage
 	Study       json.RawMessage
 	Config      json.RawMessage
+	Template    json.RawMessage
+	MarketSpace json.RawMessage
 }
 
 func InsertStrategySearchPreset(ctx context.Context, pool *pgxpool.Pool, in NewStrategySearchPreset) (StrategySearchPresetRow, error) {
 	var r StrategySearchPresetRow
+	template := in.Template
+	if template == nil {
+		template = json.RawMessage("{}")
+	}
+	marketSpace := in.MarketSpace
+	if marketSpace == nil {
+		marketSpace = json.RawMessage("{}")
+	}
 	err := pool.QueryRow(ctx, `
-		INSERT INTO strategysearch_preset (name, base_spec, search_space, study, config)
-		VALUES ($1,$2,$3,$4,$5)
+		INSERT INTO strategysearch_preset (name, base_spec, search_space, study, config, template, market_space)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		RETURNING `+strategySearchPresetCols,
-		in.Name, in.BaseSpec, in.SearchSpace, in.Study, in.Config,
+		in.Name, in.BaseSpec, in.SearchSpace, in.Study, in.Config, template, marketSpace,
 	).Scan(scanStrategySearchPreset(&r)...)
 	return r, err
 }
@@ -282,8 +314,11 @@ func DeleteStrategySearchPreset(ctx context.Context, pool *pgxpool.Pool, id stri
 	return nil
 }
 
-const strategySearchPresetCols = "id,name,base_spec,search_space,study,config,created_at"
+const strategySearchPresetCols = "id,name,base_spec,search_space,study,config,created_at,template,market_space"
 
 func scanStrategySearchPreset(r *StrategySearchPresetRow) []any {
-	return []any{&r.ID, &r.Name, &r.BaseSpec, &r.SearchSpace, &r.Study, &r.Config, &r.CreatedAt}
+	return []any{
+		&r.ID, &r.Name, &r.BaseSpec, &r.SearchSpace, &r.Study, &r.Config, &r.CreatedAt,
+		&r.Template, &r.MarketSpace,
+	}
 }

@@ -10,7 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	trb_nats "github.com/Mar1eena/TrB_V3/internal/pkg/brokers/nats"
+	"github.com/Mar1eena/TrB_V3/internal/pkg/db/clickhouse"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/db/postgres"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/env"
 	"github.com/Mar1eena/TrB_V3/internal/pkg/grpcx"
@@ -18,6 +20,7 @@ import (
 	"github.com/Mar1eena/TrB_V3/internal/pkg/wait"
 	"github.com/Mar1eena/TrB_V3/internal/services/strategysearch/manage/pkg/tasks"
 	"github.com/Mar1eena/TrB_V3/internal/services/strategysearch/manage/server"
+	historiccandlepb "github.com/Mar1eena/trb_proto/gen/go/historiccandle"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/sync/errgroup"
@@ -33,10 +36,14 @@ func App() {
 	defer stop()
 
 	var (
+		ch driver.Conn
 		pg *pgxpool.Pool
 		js *trb_nats.Nats
 	)
 	defer func() {
+		if ch != nil {
+			_ = ch.Close()
+		}
 		if pg != nil {
 			pg.Close()
 		}
@@ -45,10 +52,13 @@ func App() {
 		}
 	}()
 
-	// strategysearch-manage не читает/не пишет ClickHouse напрямую: трайлы
-	// хранятся в Postgres, опциональное зеркалирование в ClickHouse делает
-	// сам strategysearch-engine (self-provisions свою таблицу).
+	// ClickHouse: manage только читает TrB_strategysearch.equity_curve/trades/
+	// indicator_series (GetBacktestResult) — таблицы, как и trials/studies
+	// поиска, самопровизионирует strategysearch-engine (Python).
 	g := wait.NewGroup(ctx, l)
+	chSlot := wait.Go(g, "ClickHouse", func(ctx context.Context) (driver.Conn, error) {
+		return clickhouse.Connect(ctx, clickhouse.ClickHouse_config())
+	})
 	pgSlot := wait.Go(g, "PostgreSQL", func(ctx context.Context) (*pgxpool.Pool, error) {
 		pool, err := postgres.Connect(ctx, postgres.ConfigFromEnv())
 		if err != nil {
@@ -67,10 +77,26 @@ func App() {
 		l.Info().Err(err).Msg("сервис остановлен до подключения к зависимостям")
 		return
 	}
-	pg, js = pgSlot.Get(), jsSlot.Get()
+	ch, pg, js = chSlot.Get(), pgSlot.Get(), jsSlot.Get()
 
 	if err := ensureStream(js); err != nil {
 		l.Fatal().Err(err).Msg("не удалось подготовить NATS стрим/консьюмеры")
+	}
+
+	// historicCandle — резолв MarketSpace (SubmitSearch с рыночным поиском).
+	// Дозволяем сервису стартовать без неё (grpc.NewClient ленивый, не дозванивается
+	// сейчас) — если её всё-таки нет, ошибка всплывёт только на конкретном
+	// SubmitSearch с заданным market_space, а не при старте всего manage.
+	var historicCandle historiccandlepb.HistoricCandleClient
+	hcAddr := env.Addr("HISTORICCANDLE_API_URL", "HISTORICCANDLE_API_URL_DOCKER")
+	if hcAddr == "" {
+		hcAddr = "localhost:9091"
+	}
+	if hcConn, err := grpcx.DialInsecureWithLogger(hcAddr, l); err != nil {
+		l.Warn().Err(err).Str("addr", hcAddr).Msg("historicCandle: не удалось создать клиент — MarketSpace будет недоступен")
+	} else {
+		defer func() { _ = hcConn.Close() }()
+		historicCandle = historiccandlepb.NewHistoricCandleClient(hcConn)
 	}
 
 	port := env.First("STRATEGYSEARCH_PORT", "PORT")
@@ -85,7 +111,7 @@ func App() {
 	l.Info().Str("addr", addr).Msg("strategysearch-manage слушает gRPC")
 
 	gs := grpc.NewServer(grpcx.ServerOptions(l)...)
-	server.Register(gs, server.New(pg, js, l))
+	server.Register(gs, server.New(pg, ch, js, l, historicCandle))
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
@@ -104,8 +130,9 @@ func App() {
 	l.Info().Msg("сервис успешно остановлен")
 }
 
-// ensureStream идемпотентно создаёт WorkQueue-стримы strategysearch_tasks (Optuna-поиск)
-// и strategysearch_eval (fan-out оценки трайлов) с их durable-консьюмерами.
+// ensureStream идемпотентно создаёт WorkQueue-стримы strategysearch_tasks (Optuna-поиск),
+// strategysearch_eval (fan-out оценки трайлов) и strategysearch_backtest (отдельные
+// прогоны бэктеста) с их durable-консьюмерами.
 func ensureStream(js *trb_nats.Nats) error {
 	streams := []struct {
 		cfg       *nats.StreamConfig
@@ -151,6 +178,28 @@ func ensureStream(js *trb_nats.Nats) error {
 					MaxDeliver:    3,
 					MaxAckPending: 256, // shared всеми репликами strategysearch-eval-worker
 					AckWait:       5 * time.Minute,
+					DeliverPolicy: nats.DeliverAllPolicy,
+				},
+			},
+		},
+		{
+			cfg: &nats.StreamConfig{
+				Name:        tasks.StreamStrategySearchBacktest,
+				Description: "Отдельные прогоны бэктеста, не связанные с Optuna-поиском (proto BacktestTask).",
+				Subjects:    []string{tasks.SubjBacktestTasks},
+				Retention:   nats.WorkQueuePolicy,
+				Storage:     nats.FileStorage,
+				Discard:     nats.DiscardOld,
+				Duplicates:  2 * time.Minute,
+			},
+			consumers: []*nats.ConsumerConfig{
+				{
+					Durable:       tasks.ConsumerBacktest,
+					FilterSubject: tasks.SubjBacktestTasks,
+					AckPolicy:     nats.AckExplicitPolicy,
+					MaxDeliver:    3,
+					MaxAckPending: 4,
+					AckWait:       15 * time.Minute,
 					DeliverPolicy: nats.DeliverAllPolicy,
 				},
 			},

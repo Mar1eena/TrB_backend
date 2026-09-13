@@ -24,7 +24,7 @@ import envutil
 import metrics
 import pg
 from clickhouse_client import connect_with_retry
-from consumers import consume_search, subscribe_importance
+from consumers import consume_backtest, consume_search, subscribe_importance
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ async def _run() -> None:
 
     pg.init_pool(max_size=pg_pool_size)
     ch_search = connect_with_retry()
+    ch_backtest = connect_with_retry()
     probe = connect_with_retry()
 
     def _ready() -> bool:
@@ -69,10 +70,13 @@ async def _run() -> None:
     dispatcher = build_dispatcher(nc, js, loop)
 
     await subscribe_importance(nc, loop)
-    await consume_search(js, ch_search, stop, dispatcher=dispatcher)
+    await asyncio.gather(
+        consume_search(js, ch_search, stop, dispatcher=dispatcher),
+        consume_backtest(js, ch_backtest, stop),
+    )
 
     await nc.drain()
-    for c in (ch_search, probe):
+    for c in (ch_search, ch_backtest, probe):
         try:
             c.close()
         except Exception:  # noqa: BLE001

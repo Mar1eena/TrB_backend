@@ -18,3 +18,8 @@ CONSUMER_TRIAL_WORKER = "strategysearch_trial_worker"
 # manage просит engine посчитать param importances (fANOVA) по конкретному
 # search_id — core-NATS request/reply, не JetStream.
 SUBJ_IMPORTANCE_REQUEST = "TrB.strategysearch.importance.request"
+
+# Отдельные (не связанные с Optuna-поиском) прогоны бэктеста.
+STREAM_STRATEGYSEARCH_BACKTEST = "strategysearch_backtest"
+SUBJ_BACKTEST_TASKS = "TrB.strategysearch.backtest.tasks"
+CONSUMER_BACKTEST = "strategysearch_backtest_engine"

@@ -69,10 +69,11 @@ def get_value(spec, path: str):
     return getattr(parent, field)
 
 
-def set_value(spec, path: str, value: Any) -> None:
-    if value is None:
-        return
-    parent, field = _resolve(spec, path)
+def set_field(parent, field: str, value: Any) -> None:
+    """Устанавливает скалярное поле field на сообщении parent с приведением типа
+    по FieldDescriptor.cpp_type — общая часть set_value (path на StrategySearchSpec)
+    и compose.py (path на IndicatorSettings.<type>, без обхода дерева).
+    """
     fd = parent.DESCRIPTOR.fields_by_name.get(field)
     if fd is None:
         raise PathError(f"нет поля {field}")
@@ -86,6 +87,13 @@ def set_value(spec, path: str, value: Any) -> None:
         setattr(parent, field, int(round(float(value))))
     else:
         setattr(parent, field, float(value))
+
+
+def set_value(spec, path: str, value: Any) -> None:
+    if value is None:
+        return
+    parent, field = _resolve(spec, path)
+    set_field(parent, field, value)
 
 
 def apply_params(spec, params: dict[str, Any]) -> None:

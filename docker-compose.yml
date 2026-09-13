@@ -228,158 +228,6 @@ services:
         reservations:
           memory: 128M
 
-  strategy-manage:
-    <<: [*services-config]
-    container_name: trb-strategy-manage
-    image: strategy-manage:latest
-    build:
-      <<: *go-build
-      args:
-        CMD_PATH: ./internal/services/strategy/manage/cmd/main.go
-    environment:
-      - APP_RUNTIME=docker
-      - PORT=9094
-      - STRATEGY_PORT=9094
-      - NATS_URL
-      - NATS_URL_DOCKER
-      - CLICKHOUSE_URL
-      - CLICKHOUSE_URL_DOCKER
-      - CLICKHOUSE_DATABASE
-      - CLICKHOUSE_USER
-      - CLICKHOUSE_USERNAME
-      - CLICKHOUSE_PASSWORD
-      - POSTGRES_URL
-      - POSTGRES_URL_DOCKER
-      - POSTGRES_USER
-      - POSTGRES_PASSWORD
-      - POSTGRES_DB
-    ports:
-      - "9094:9094"
-    depends_on:
-      - clickhouse-db
-      - postgre-db
-      - nats-server
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          memory: 64M
-
-  # Координатор: single-бэктесты (TrB.strategy.backtest.tasks) + оркестрация
-  # генетического поиска (TrB.strategy.search.tasks). Оценку кандидатов поиска
-  # целиком раздаёт пулу strategy-eval-worker (STRATEGY_EVAL_MODE=distributed;
-  # если пул недоступен — деградирует в локальный ProcessPoolExecutor).
-  # Код: internal/services/strategy/{engine,_common}/
-  strategy-engine:
-    <<: [*services-config]
-    container_name: trb-strategy-engine
-    image: strategy-engine:latest
-    build:
-      context: .
-      dockerfile: ./build/docker/services/strategy/engine.Dockerfile
-    command: ["python", "/app/main.py"]
-    # TEMP: локальный proto до релиза trb-proto с EvalTask/EvalResult
-    # (зеркалит `replace` в go.mod). Убрать вместе с replace после публикации.
-    volumes:
-      - ../TrB_proto/gen/python:/opt/trbproto:ro
-    environment:
-      - APP_RUNTIME=docker
-      - PYTHONPATH=/app:/opt/trbproto
-      - STRATEGY_METRICS_ADDR=:9106
-      - STRATEGY_EVAL_MODE=distributed
-      - STRATEGY_EVAL_TASK_TIMEOUT_SEC
-      - STRATEGY_EVAL_CACHE_TTL_DAYS
-      - STRATEGY_PG_POOL
-      - STRATEGY_ENGINE_VERSION
-      - STRATEGY_INDICATOR_SOURCE
-      - STRATEGY_INDICATOR_WAIT_SEC
-      - STRATEGY_BACKTEST_CONCURRENCY
-      - INDICATORS_MANAGE_ADDR=indicators-manage:9093
-      - NATS_URL
-      - NATS_URL_DOCKER
-      - CLICKHOUSE_URL
-      - CLICKHOUSE_URL_DOCKER
-      - CLICKHOUSE_DATABASE
-      - CLICKHOUSE_USER
-      - CLICKHOUSE_USERNAME
-      - CLICKHOUSE_PASSWORD
-      - POSTGRES_URL
-      - POSTGRES_URL_DOCKER
-      - POSTGRES_USER
-      - POSTGRES_PASSWORD
-      - POSTGRES_DB
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9106/healthz').status==200 else 1)\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    depends_on:
-      - clickhouse-db
-      - postgre-db
-      - nats-server
-      - indicators-manage
-    deploy:
-      resources:
-        limits:
-          memory: 3072M
-        reservations:
-          memory: 256M
-
-  # Пул stateless-воркеров: вся тяжёлая оценка кандидатов генетического поиска.
-  # Отдельный сервис и образ (Dockerfile eval-worker), свой код
-  # internal/services/strategy/{eval-worker,_common}/. PG не нужен (кэш пишет
-  # координатор), indicators-manage не нужен.
-  # Масштабировать: docker compose up -d --scale strategy-eval-worker=8
-  strategy-eval-worker:
-    <<: [*services-config]
-    image: strategy-eval-worker:latest
-    build:
-      context: .
-      dockerfile: ./build/docker/services/strategy/eval-worker.Dockerfile
-    command: ["python", "/app/main.py"]
-    volumes:
-      - ../TrB_proto/gen/python:/opt/trbproto:ro
-    environment:
-      - APP_RUNTIME=docker
-      - PYTHONPATH=/app:/opt/trbproto
-      - STRATEGY_METRICS_ADDR=:9106
-      # Память: ~1–1.5 ГБ пик на процесс на длинных сериях. По умолчанию
-      # параллелизм подбирается из cgroup-лимита (mem_limit / 1.2ГБ, но не больше
-      # ядер и 8). Задайте число явно, если хотите иначе.
-      - STRATEGY_EVAL_WORKER_CONCURRENCY=2
-      - STRATEGY_EVAL_MAX_TASKS_PER_CHILD    # перезапуск процесса каждые N задач (деф. 40)
-      - STRATEGY_EVAL_TASK_TIMEOUT_SEC
-      - STRATEGY_CANDLE_CACHE_SIZE           # деф. 1 (один набор свечей на процесс)
-      - STRATEGY_ENGINE_VERSION
-      - NATS_URL
-      - NATS_URL_DOCKER
-      - CLICKHOUSE_URL
-      - CLICKHOUSE_URL_DOCKER
-      - CLICKHOUSE_DATABASE
-      - CLICKHOUSE_USER
-      - CLICKHOUSE_USERNAME
-      - CLICKHOUSE_PASSWORD
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9106/healthz').status==200 else 1)\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    depends_on:
-      - clickhouse-db
-      - nats-server
-      - strategy-manage
-    deploy:
-      replicas: 4
-      resources:
-        limits:
-          memory: 3072M
-        reservations:
-          memory: 256M
-
   strategysearch-manage:
     <<: [*services-config]
     container_name: trb-strategysearch-manage
@@ -399,11 +247,15 @@ services:
       - POSTGRES_USER
       - POSTGRES_PASSWORD
       - POSTGRES_DB
+      # Резолв MarketSpace.market_candidates (SubmitSearch с рыночным поиском).
+      - HISTORICCANDLE_API_URL
+      - HISTORICCANDLE_API_URL_DOCKER
     ports:
       - "9095:9095"
     depends_on:
       - postgre-db
       - nats-server
+      - historiccandle
     deploy:
       resources:
         limits:
@@ -415,7 +267,6 @@ services:
   # Координатор: Optuna-поиск (TrB.strategysearch.search.tasks). Оценку трайлов
   # раздаёт пулу strategysearch-eval-worker (STRATEGYSEARCH_EVAL_MODE=distributed;
   # если пул недоступен — деградирует в локальный ProcessPoolExecutor).
-  # Независим от strategy/strategy-engine (свой NATS/Postgres/proto-пакет).
   # Код: internal/services/strategysearch/{engine,_common}/
   strategysearch-engine:
     <<: [*services-config]
@@ -437,6 +288,7 @@ services:
       - STRATEGYSEARCH_EVAL_CACHE_TTL_DAYS
       - STRATEGYSEARCH_PG_POOL
       - STRATEGYSEARCH_ENGINE_VERSION
+      - STRATEGYSEARCH_BACKTEST_CONCURRENCY
       - NATS_URL
       - NATS_URL_DOCKER
       - CLICKHOUSE_URL

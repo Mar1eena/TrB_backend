@@ -17,7 +17,9 @@ import os
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime
 from typing import Any
 
 import optuna
@@ -31,7 +33,7 @@ from specmod import load as specload
 from specmod.hash import spec_hash_signed
 from strategysearch import search_pb2
 
-from . import paramspace, pruners, samplers
+from . import compose, market, paramspace, pruners, samplers
 from .cache import EvalCache, eval_key
 from .chsink import ClickHouseTrialSink
 
@@ -52,25 +54,62 @@ class TrialEvalError(Exception):
 
 
 # --- локальный ProcessPoolExecutor (фолбэк, если пул воркеров недоступен) ---
+#
+# uid/interval/период задаются per-trial (рыночный поиск варьирует их так же,
+# как структуру), поэтому дочерний процесс не может держать один преднагруженный
+# df на весь пул — вместо этого лениво грузит и кэширует свечи по (uid, interval,
+# start, end), тем же способом, что и strategysearch-eval-worker (worker.py:_candles).
 
-_WORKER_DF: pd.DataFrame | None = None
-_WORKER_BENCH_DF: pd.DataFrame | None = None
 _WORKER_CONFIG: Any = None
+_CH: Any = None
+_CANDLES: "OrderedDict[tuple, pd.DataFrame]" = OrderedDict()
+_CANDLE_CACHE_MAX = 4
 
 
-def _worker_init(df: pd.DataFrame, bench_df: pd.DataFrame | None, config) -> None:
-    global _WORKER_DF, _WORKER_BENCH_DF, _WORKER_CONFIG
-    _WORKER_DF = df
-    _WORKER_BENCH_DF = bench_df
+def _worker_init(config) -> None:
+    global _WORKER_CONFIG
     _WORKER_CONFIG = config
 
 
-def _evaluate_local(spec_json: str, pruning_interval: int) -> dict[str, Any]:
+def _ch_client_local() -> Any:
+    global _CH
+    if _CH is None:
+        from clickhouse_client import create_client  # noqa: PLC0415
+
+        _CH = create_client()
+    return _CH
+
+
+def _candles_local(uid: str, interval: int, start: datetime, end: datetime) -> pd.DataFrame:
+    key = (uid, int(interval), start.isoformat(), end.isoformat())
+    df = _CANDLES.get(key)
+    if df is None:
+        df = hct.load_candles(_ch_client_local(), uid, int(interval), start, end)
+        _CANDLES[key] = df
+        while len(_CANDLES) > _CANDLE_CACHE_MAX:
+            _CANDLES.popitem(last=False)
+    else:
+        _CANDLES.move_to_end(key)
+    return df
+
+
+def _evaluate_local(spec_json: str, uid: str, interval: int, start_iso: str, end_iso: str,
+                    pruning_interval: int) -> dict[str, Any]:
     spec = specload.parse_spec(spec_json)
     try:
+        df = _candles_local(uid, interval, datetime.fromisoformat(start_iso), datetime.fromisoformat(end_iso))
+        if df.empty:
+            return {"metrics": {}, "intermediate": []}
+        bench_df = None
+        if _WORKER_CONFIG.benchmark_uid:
+            try:
+                bench_df = _candles_local(_WORKER_CONFIG.benchmark_uid, interval,
+                                          datetime.fromisoformat(start_iso), datetime.fromisoformat(end_iso))
+            except Exception:  # noqa: BLE001
+                pass
         result = run_backtest_inproc(
-            spec, _WORKER_DF, _WORKER_CONFIG, lean=True,
-            benchmark_df=_WORKER_BENCH_DF, checkpoint_interval_bars=pruning_interval,
+            spec, df, _WORKER_CONFIG, lean=True,
+            benchmark_df=bench_df, checkpoint_interval_bars=pruning_interval,
         )
         return {"metrics": result["metrics"], "intermediate": result.get("checkpoints", [])}
     except specload.SpecError:
@@ -115,8 +154,20 @@ def run_search(ch_client, search_id: str, dispatcher=None) -> None:
         space = specload.parse_search_space(row["search_space"])
         study_cfg = specload.parse_study(row["study"])
         config = specload.parse_config(row["config"])
+        template = specload.parse_template(row.get("template"))
+        market_space = specload.parse_market_space(row.get("market_space"))
+        market_candidates = specload.parse_market_candidates(row.get("market_candidates"))
     except specload.SpecError as exc:
         pg.mark_search_status(search_id, "failed", error=str(exc), engine_version=ENGINE_VERSION)
+        return
+
+    if template is not None and not template.indicator_palette:
+        pg.mark_search_status(search_id, "failed", error="template.indicator_palette пуст",
+                              engine_version=ENGINE_VERSION)
+        return
+    if market_space is not None and not market_candidates:
+        pg.mark_search_status(search_id, "failed", error="market_space задан, но market_candidates пуст",
+                              engine_version=ENGINE_VERSION)
         return
 
     objective_metrics = list(study_cfg.objective.metrics)
@@ -126,22 +177,19 @@ def run_search(ch_client, search_id: str, dispatcher=None) -> None:
     is_multi = len(objective_metrics) > 1
     budget = study_cfg.budget
 
-    try:
-        df = hct.load_candles(ch_client, row["uid"], int(row["interval"]),
-                              row["period_start"], row["period_end"])
-    except Exception as exc:  # noqa: BLE001
-        raise SearchError(f"выборка свечей: {exc}") from exc
-    if df.empty:
-        pg.mark_search_status(search_id, "failed", error="нет свечей в диапазоне", engine_version=ENGINE_VERSION)
-        return
-
-    bench_df = None
-    if config.benchmark_uid:
+    # Рыночный поиск: uid/interval/период резолвит manage в market_candidates
+    # (см. HistoricCandle/Instruments), движок им доверяет и не ходит в CH за
+    # проверкой. Фиксированный режим (как раньше) — быстрый fail здесь же,
+    # до старта Optuna, если по uid/interval/периоду вообще нет свечей.
+    if not market_candidates:
         try:
-            bench_df = hct.load_candles(ch_client, config.benchmark_uid, int(row["interval"]),
+            probe_df = hct.load_candles(ch_client, row["uid"], int(row["interval"]),
                                         row["period_start"], row["period_end"])
         except Exception as exc:  # noqa: BLE001
-            log.warning("search %s: бенчмарк %s не загружен: %s", search_id, config.benchmark_uid, exc)
+            raise SearchError(f"выборка свечей: {exc}") from exc
+        if probe_df.empty:
+            pg.mark_search_status(search_id, "failed", error="нет свечей в диапазоне", engine_version=ENGINE_VERSION)
+            return
 
     try:
         sampler = samplers.build(study_cfg.sampler if study_cfg.HasField("sampler") else None, space)
@@ -189,7 +237,7 @@ def run_search(ch_client, search_id: str, dispatcher=None) -> None:
         if pool_holder["pool"] is None:
             pool_holder["pool"] = ProcessPoolExecutor(
                 max_workers=n_jobs, initializer=_worker_init,
-                initargs=(df, bench_df, config), max_tasks_per_child=50,
+                initargs=(config,), max_tasks_per_child=50,
             )
         return pool_holder["pool"]
 
@@ -219,14 +267,39 @@ def run_search(ch_client, search_id: str, dispatcher=None) -> None:
         # pareto_front_trial_ids на стороне клиента.
         trial_id = str(uuid.uuid4())
         trial.set_user_attr("uuid", trial_id)
+
+        if market_candidates:
+            uid, interval, period_start, period_end = market.sample_market(trial, market_candidates, market_space)
+        else:
+            uid, interval, period_start, period_end = row["uid"], int(row["interval"]), row["period_start"], row["period_end"]
+
+        spec = _clone(base_spec)
+        if template is not None:
+            composed = compose.build_spec(trial, template)
+            del spec.indicators[:]
+            spec.indicators.extend(composed.indicators)
+            spec.entry_long.CopyFrom(composed.entry_long)
+            spec.exit_long.CopyFrom(composed.exit_long)
+            spec.ClearField("entry_short")
+            spec.ClearField("exit_short")
         params = paramspace.sample_all(trial, space)
-        spec = _clone_spec(base_spec)
         paramspace.apply_params(spec, params)
         s_hash = spec_hash_signed(spec)
+        # trial.params — суперсет params: помимо search_space, содержит market.*/
+        # template.* suggest_*-вызовы (см. market.sample_market/compose.build_spec
+        # выше) — персистим его целиком, иначе UI/страница трайлов не видели бы,
+        # какая структура/рынок были выбраны для этого трайла (только сам spec_json).
+        params = dict(trial.params)
+
+        config_trial = _clone(config)
+        config_trial.uid = uid
+        config_trial.interval = interval
+        config_trial.start.FromDatetime(period_start)
+        config_trial.end.FromDatetime(period_end)
 
         key = eval_key(
-            spec_hash=s_hash, uid=row["uid"], interval=int(row["interval"]),
-            period_start=row["period_start"], period_end=row["period_end"], data_fraction=1.0,
+            spec_hash=s_hash, uid=uid, interval=interval,
+            period_start=period_start, period_end=period_end, data_fraction=1.0,
             commission_pct=config.commission_pct, slippage_pct=config.slippage_pct,
             initial_cash=config.initial_cash, long_only=config.long_only,
             benchmark_uid=config.benchmark_uid, engine_version=ENGINE_VERSION,
@@ -238,7 +311,7 @@ def run_search(ch_client, search_id: str, dispatcher=None) -> None:
         else:
             if use_dispatch:
                 res = dispatcher.evaluate(
-                    search_id, trial_id, trial.number, spec, config,
+                    search_id, trial_id, trial.number, spec, config_trial,
                     budget.pruning_report_interval_bars, timeout=_eval_task_timeout(),
                 )
                 if res is None or res.state == search_pb2.TRIAL_STATE_FAIL or not res.values:
@@ -249,7 +322,8 @@ def run_search(ch_client, search_id: str, dispatcher=None) -> None:
                 intermediate = [{"step": iv.step, "value": iv.value} for iv in res.intermediate_values]
             else:
                 fut = _local_pool().submit(
-                    _evaluate_local, specload.spec_to_json(spec), budget.pruning_report_interval_bars,
+                    _evaluate_local, specload.spec_to_json(spec), uid, interval,
+                    period_start.isoformat(), period_end.isoformat(), budget.pruning_report_interval_bars,
                 )
                 try:
                     out = fut.result(timeout=_eval_task_timeout())
@@ -372,7 +446,8 @@ def run_search(ch_client, search_id: str, dispatcher=None) -> None:
              progress_state["failed"], cache.hits, cache.stores)
 
 
-def _clone_spec(base_spec):
-    spec = type(base_spec)()
-    spec.CopyFrom(base_spec)
-    return spec
+def _clone(msg):
+    """Копия любого protobuf-сообщения (StrategySearchSpec или BacktestConfig)."""
+    out = type(msg)()
+    out.CopyFrom(msg)
+    return out

@@ -25,6 +25,12 @@ const (
 	// Core-NATS request/reply: manage просит strategysearch-engine посчитать
 	// param importances (fANOVA) по RDB-хранилищу Optuna конкретного поиска.
 	SubjImportanceRequest = "TrB.strategysearch.importance.request"
+
+	// Отдельные (не связанные с Optuna-поиском) прогоны бэктеста — submit
+	// одного спека на фиксированном инструменте/периоде.
+	StreamStrategySearchBacktest = "strategysearch_backtest"
+	SubjBacktestTasks            = "TrB.strategysearch.backtest.tasks"
+	ConsumerBacktest             = "strategysearch_backtest_engine"
 )
 
 // PublishSearch кладёт SearchTask{search_id} в стрим (MsgId=search_id для дедупа).
@@ -34,5 +40,15 @@ func PublishSearch(js *trb_nats.Nats, searchID string) error {
 		return err
 	}
 	_, err = js.Jsc.Publish(SubjSearchTasks, b, nats.MsgId(searchID))
+	return err
+}
+
+// PublishBacktest кладёт BacktestTask{run_id} в стрим (MsgId=run_id для дедупа).
+func PublishBacktest(js *trb_nats.Nats, runID string) error {
+	b, err := proto.Marshal(&strategysearchpb.BacktestTask{RunId: runID})
+	if err != nil {
+		return err
+	}
+	_, err = js.Jsc.Publish(SubjBacktestTasks, b, nats.MsgId(runID))
 	return err
 }

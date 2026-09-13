@@ -64,14 +64,16 @@ def fetch_search_run(search_id: str) -> dict[str, Any] | None:
     with _conn() as c:
         row = c.execute(
             """SELECT id, base_spec, search_space, study, config, status,
-                      uid, interval, period_start, period_end
+                      uid, interval, period_start, period_end,
+                      template, market_space, market_candidates
                FROM strategysearch_run WHERE id = %s""",
             (search_id,),
         ).fetchone()
     if row is None:
         return None
     keys = ["id", "base_spec", "search_space", "study", "config", "status",
-            "uid", "interval", "period_start", "period_end"]
+            "uid", "interval", "period_start", "period_end",
+            "template", "market_space", "market_candidates"]
     return dict(zip(keys, row))
 
 
@@ -199,3 +201,56 @@ def gc_eval_cache(ttl_days: int) -> int:
             (int(ttl_days),),
         )
         return cur.rowcount or 0
+
+
+# --- strategysearch_backtest_run: отдельные (не связанные с поиском) прогоны ---
+
+
+def fetch_backtest_run(run_id: str) -> dict[str, Any] | None:
+    with _conn() as c:
+        row = c.execute(
+            """SELECT id, strategy_id, spec, config, status, uid, interval,
+                      period_start, period_end
+               FROM strategysearch_backtest_run WHERE id = %s""",
+            (run_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    keys = ["id", "strategy_id", "spec", "config", "status", "uid", "interval",
+            "period_start", "period_end"]
+    return dict(zip(keys, row))
+
+
+def mark_run_running(run_id: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE strategysearch_backtest_run SET status='running', started_at=%s WHERE id=%s AND status IN ('queued','running')",
+            (_now(), run_id),
+        )
+
+
+def mark_run_status(run_id: str, status: str, *, error: str = "", engine_version: str = "") -> None:
+    with _conn() as c:
+        c.execute(
+            """UPDATE strategysearch_backtest_run
+               SET status=%s, error=%s,
+                   engine_version = CASE WHEN %s <> '' THEN %s ELSE engine_version END,
+                   finished_at=%s
+               WHERE id=%s""",
+            (status, error, engine_version, engine_version, _now(), run_id),
+        )
+
+
+def write_backtest_result(run_id: str, metrics: dict[str, float]) -> None:
+    promoted = ("total_return", "cagr", "sharpe", "sortino", "max_drawdown", "win_rate",
+                "profit_factor", "sqn", "trades_count", "exposure", "final_equity")
+    vals = [metrics.get(k) for k in promoted]
+    with _conn() as c:
+        c.execute(
+            f"""INSERT INTO strategysearch_backtest_result
+                (run_id, {", ".join(promoted)}, metrics)
+                VALUES (%s, {", ".join(["%s"] * len(promoted))}, %s)
+                ON CONFLICT (run_id) DO UPDATE SET
+                {", ".join(f"{k}=EXCLUDED.{k}" for k in promoted)}, metrics=EXCLUDED.metrics""",
+            (run_id, *vals, json_dumps(metrics)),
+        )

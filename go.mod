@@ -3,12 +3,13 @@ module github.com/Mar1eena/TrB_V3
 go 1.26.1
 
 // TEMP: develop against local proto until a trb_proto release with
-// ListSearchTrials/GetParamImportances (Поиск 2.0: графики Optuna) is
-// tagged. Remove the replace directive below before commit.
+// Strategy CRUD + standalone Backtest RPCs on strategysearch (восстановление
+// составления стратегий и истории бэктестов) is tagged. Remove the replace
+// directive below after `make rel` in TrB_proto and bump the require above.
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
-	github.com/Mar1eena/trb_proto v1.0.57
+	github.com/Mar1eena/trb_proto v1.0.63
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.4
 	github.com/joho/godotenv v1.5.1
@@ -53,3 +54,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260427160629-7cedc36a6bc4 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 // indirect
 )
+
+// TEMP: разработка сохранения пресетов структурного/рыночного поиска
+// (SearchPreset.template/market_space) — против локального trb_proto, пока не
+// тегирован релиз с этими полями. Убрать перед коммитом релиза.

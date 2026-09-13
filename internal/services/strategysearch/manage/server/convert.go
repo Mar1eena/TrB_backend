@@ -65,6 +65,61 @@ func strp(s string) *string {
 	return &s
 }
 
+func strVal(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func strategyRowToProto(r postgres.StrategyRow) (*strategysearchpb.Strategy, error) {
+	spec, err := specFromJSON(r.Spec)
+	if err != nil {
+		return nil, err
+	}
+	return &strategysearchpb.Strategy{
+		Id:          r.ID,
+		Name:        r.Name,
+		Description: r.Description,
+		Spec:        spec,
+		SpecHash:    uint64(r.SpecHash),
+		SpecVersion: r.SpecVersion,
+		Archived:    r.Archived,
+		CreatedAt:   ts(r.CreatedAt),
+		UpdatedAt:   ts(r.UpdatedAt),
+	}, nil
+}
+
+func backtestRunRowToProto(r postgres.BacktestRunRow) (*strategysearchpb.BacktestRun, error) {
+	spec, err := specFromJSON(r.Spec)
+	if err != nil {
+		return nil, err
+	}
+	cfg := &strategysearchpb.BacktestConfig{}
+	_ = pjUnmarshal.Unmarshal(r.Config, cfg)
+	return &strategysearchpb.BacktestRun{
+		RunId:         r.ID,
+		StrategyId:    strVal(r.StrategyID),
+		Spec:          spec,
+		Config:        cfg,
+		Status:        statusFromString(r.Status),
+		Error:         r.Error,
+		EngineVersion: r.EngineVersion,
+		CreatedAt:     ts(r.CreatedAt),
+		StartedAt:     tsp(r.StartedAt),
+		FinishedAt:    tsp(r.FinishedAt),
+	}, nil
+}
+
+func metricsFromJSON(raw json.RawMessage) *strategysearchpb.BacktestMetrics {
+	m := &strategysearchpb.BacktestMetrics{}
+	if len(raw) == 0 {
+		return m
+	}
+	_ = pjUnmarshal.Unmarshal(raw, m)
+	return m
+}
+
 func searchRunRowToProto(r postgres.StrategySearchRunRow) (*strategysearchpb.SearchRun, error) {
 	baseSpec, err := specFromJSON(r.BaseSpec)
 	if err != nil {
@@ -88,18 +143,46 @@ func searchRunRowToProto(r postgres.StrategySearchRunRow) (*strategysearchpb.Sea
 		}
 	}
 
+	var template *strategysearchpb.StrategyTemplate
+	if len(r.Template) > 0 {
+		t := &strategysearchpb.StrategyTemplate{}
+		if pjUnmarshal.Unmarshal(r.Template, t) == nil && len(t.GetIndicatorPalette()) > 0 {
+			template = t
+		}
+	}
+	var marketSpace *strategysearchpb.MarketSpace
+	if len(r.MarketSpace) > 0 {
+		ms := &strategysearchpb.MarketSpace{}
+		if pjUnmarshal.Unmarshal(r.MarketSpace, ms) == nil {
+			marketSpace = ms
+		}
+	}
+	var marketCandidates []*strategysearchpb.MarketCandidate
+	var rawCandidates []json.RawMessage
+	if err := json.Unmarshal(r.MarketCandidates, &rawCandidates); err == nil {
+		for _, it := range rawCandidates {
+			mc := &strategysearchpb.MarketCandidate{}
+			if pjUnmarshal.Unmarshal(it, mc) == nil {
+				marketCandidates = append(marketCandidates, mc)
+			}
+		}
+	}
+
 	return &strategysearchpb.SearchRun{
-		SearchId:      r.ID,
-		Name:          r.Name,
-		BaseSpec:      baseSpec,
-		SearchSpace:   space,
-		Study:         study,
-		Config:        cfg,
-		Progress:      progress,
-		EngineVersion: r.EngineVersion,
-		CreatedAt:     ts(r.CreatedAt),
-		StartedAt:     tsp(r.StartedAt),
-		FinishedAt:    tsp(r.FinishedAt),
+		SearchId:         r.ID,
+		Name:             r.Name,
+		BaseSpec:         baseSpec,
+		SearchSpace:      space,
+		Study:            study,
+		Config:           cfg,
+		Progress:         progress,
+		EngineVersion:    r.EngineVersion,
+		CreatedAt:        ts(r.CreatedAt),
+		StartedAt:        tsp(r.StartedAt),
+		FinishedAt:       tsp(r.FinishedAt),
+		Template:         template,
+		MarketSpace:      marketSpace,
+		MarketCandidates: marketCandidates,
 	}, nil
 }
 
@@ -152,6 +235,21 @@ func presetRowToProto(r postgres.StrategySearchPresetRow) (*strategysearchpb.Sea
 		}
 	}
 
+	var template *strategysearchpb.StrategyTemplate
+	if len(r.Template) > 0 {
+		t := &strategysearchpb.StrategyTemplate{}
+		if pjUnmarshal.Unmarshal(r.Template, t) == nil && len(t.GetIndicatorPalette()) > 0 {
+			template = t
+		}
+	}
+	var marketSpace *strategysearchpb.MarketSpace
+	if len(r.MarketSpace) > 0 {
+		ms := &strategysearchpb.MarketSpace{}
+		if pjUnmarshal.Unmarshal(r.MarketSpace, ms) == nil {
+			marketSpace = ms
+		}
+	}
+
 	return &strategysearchpb.SearchPreset{
 		Id:          r.ID,
 		Name:        r.Name,
@@ -160,6 +258,8 @@ func presetRowToProto(r postgres.StrategySearchPresetRow) (*strategysearchpb.Sea
 		Study:       study,
 		Config:      cfg,
 		CreatedAt:   ts(r.CreatedAt),
+		Template:    template,
+		MarketSpace: marketSpace,
 	}, nil
 }
 

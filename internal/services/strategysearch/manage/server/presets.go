@@ -29,6 +29,8 @@ func (s *Server) CreateSearchPreset(ctx context.Context, req *strategysearchpb.C
 		SearchSpace: spaceJSON,
 		Study:       msgToJSON(req.GetStudy()),
 		Config:      msgToJSON(req.GetConfig()),
+		Template:    msgToJSON(req.GetTemplate()),
+		MarketSpace: msgToJSON(req.GetMarketSpace()),
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())

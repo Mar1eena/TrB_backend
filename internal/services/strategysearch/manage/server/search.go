@@ -23,16 +23,38 @@ func (s *Server) SubmitSearch(ctx context.Context, req *strategysearchpb.SubmitS
 	if ok, issues := validate.Spec(baseSpec); !ok {
 		return nil, status.Errorf(codes.InvalidArgument, "невалидная базовая стратегия: %s", issuesText(issues))
 	}
-	cfg := req.GetConfig()
-	if cfg == nil || cfg.GetUid() == "" || cfg.GetInterval() == 0 || cfg.GetStart() == nil || cfg.GetEnd() == nil {
-		return nil, status.Error(codes.InvalidArgument, "config.uid/interval/start/end обязательны")
+	template := req.GetTemplate()
+	if ok, issues := validate.Template(template); !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "невалидный шаблон стратегии: %s", issuesText(issues))
 	}
+
+	marketSpace := req.GetMarketSpace()
+	cfg := req.GetConfig()
+	var marketCandidates []*strategysearchpb.MarketCandidate
+	if marketSpace != nil {
+		if cfg == nil {
+			return nil, status.Error(codes.InvalidArgument, "config обязателен (комиссия/слиппедж/капитал)")
+		}
+		resolved, err := s.resolveMarketCandidates(ctx, marketSpace)
+		if err != nil {
+			return nil, err
+		}
+		marketCandidates = resolved
+	} else {
+		if cfg == nil || cfg.GetUid() == "" || cfg.GetInterval() == 0 || cfg.GetStart() == nil || cfg.GetEnd() == nil {
+			return nil, status.Error(codes.InvalidArgument, "config.uid/interval/start/end обязательны")
+		}
+	}
+
 	study := req.GetStudy()
 	if study == nil {
 		study = &strategysearchpb.StudyConfig{}
 	}
 	if ok, issues := validate.Study(study, req.GetSearchSpace()); !ok {
 		return nil, status.Errorf(codes.InvalidArgument, "невалидные настройки поиска: %s", issuesText(issues))
+	}
+	if ok, issues := validate.SamplerForStructuralSearch(study.GetSampler(), template, marketSpace); !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "несовместимые настройки: %s", issuesText(issues))
 	}
 	budget := study.GetBudget()
 	if budget.GetSeed() == 0 {
@@ -64,17 +86,37 @@ func (s *Server) SubmitSearch(ctx context.Context, req *strategysearchpb.SubmitS
 		TotalTrials:      budget.GetNTrials(),
 	})
 
+	// В рыночном режиме (marketSpace != nil) uid/interval/период — не одно
+	// фиксированное значение, а список market_candidates; legacy-колонки
+	// uid/interval/period_start/period_end (NOT NULL) заполняем заглушкой —
+	// координатор их в этом режиме не читает (см. engine/search/runner.py).
+	uid, interval := cfg.GetUid(), cfg.GetInterval()
+	periodStart, periodEnd := cfg.GetStart().AsTime(), cfg.GetEnd().AsTime()
+	if marketSpace != nil {
+		uid, interval = "", 0
+		periodStart, periodEnd = time.Now().UTC(), time.Now().UTC()
+	}
+
+	candidatesItems := make([]json.RawMessage, 0, len(marketCandidates))
+	for _, mc := range marketCandidates {
+		candidatesItems = append(candidatesItems, msgToJSON(mc))
+	}
+	candidatesJSON, _ := json.Marshal(candidatesItems)
+
 	row, err := postgres.InsertStrategySearchRun(ctx, s.pg, postgres.NewStrategySearchRun{
-		Name:        req.GetName(),
-		BaseSpec:    msgToJSON(baseSpec),
-		SearchSpace: spaceJSON,
-		Study:       msgToJSON(study),
-		UID:         cfg.GetUid(),
-		Interval:    cfg.GetInterval(),
-		PeriodStart: cfg.GetStart().AsTime(),
-		PeriodEnd:   cfg.GetEnd().AsTime(),
-		Config:      msgToJSON(cfg),
-		Progress:    initialProgress,
+		Name:             req.GetName(),
+		BaseSpec:         msgToJSON(baseSpec),
+		SearchSpace:      spaceJSON,
+		Study:            msgToJSON(study),
+		UID:              uid,
+		Interval:         interval,
+		PeriodStart:      periodStart,
+		PeriodEnd:        periodEnd,
+		Config:           msgToJSON(cfg),
+		Progress:         initialProgress,
+		Template:         msgToJSON(template),
+		MarketSpace:      msgToJSON(marketSpace),
+		MarketCandidates: candidatesJSON,
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())

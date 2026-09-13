@@ -1,4 +1,4 @@
-// Package spechash — канонический хэш StrategySearchSpec (дедуп трайлов/кэша).
+// Package spechash — канонический хэш StrategySearchSpec (дедуп прогонов бэктеста).
 package spechash
 
 import (
@@ -16,8 +16,7 @@ var ErrSpecRequired = errors.New("spec обязателен")
 var deterministicMarshal = proto.MarshalOptions{Deterministic: true}
 
 // Hash64 — SHA-256(детерминированный marshal spec)[:8] little-endian как uint64.
-// Тот же алгоритм, что и у strategy/manage/pkg/spechash и у Python-порта
-// _common/specmod/hash.py — значения остаются сравнимыми между сервисами.
+// Совпадает по способу вычисления с _common/specmod/hash.py::spec_hash_u64 (Python-сторона движка).
 func Hash64(spec *strategysearchpb.StrategySearchSpec) (uint64, error) {
 	if spec == nil {
 		return 0, ErrSpecRequired
